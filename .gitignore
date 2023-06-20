@@ -1,0 +1,11 @@
+.ipynb_checkpoints
+
+.vscode
+.virtual_documents
+slurm*.out
+lightning_logs/
+
+*.egg-info
+*.pyc
+
+__pycache__

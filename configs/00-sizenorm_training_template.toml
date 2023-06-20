@@ -1,0 +1,39 @@
+[paths]
+# training='/n/groups/datta/win/longtogeny/data/size_network/training_data/3month-male-multi_animal_training_data.h5'
+# validation='/n/groups/datta/win/longtogeny/data/size_network/male_ontogeny_validation.h5'
+training='/n/groups/datta/win/longtogeny/data/size_network/training_data/multi_animal_training_data.h5'
+validation='/n/groups/datta/win/longtogeny/data/size_network/female_ontogeny_validation.h5'
+
+wall_noise='/n/groups/datta/win/longtogeny/data/size_network/training_data/wall_noise.h5'
+saving='/n/groups/datta/win/longtogeny/size_norm/models/param_scan'
+
+[augmentation]
+angle_range = [-80, 80]
+scale_x = [0.4, 1.7]
+scale_y = [0.4, 1.7]
+translate_x = [-0.2, 0.2]  # proportional
+translate_y = [-0.3, 0.3]  # proportional
+height = [-5, 5]
+white_noise_scale = 3
+
+elastic_alpha = 80.0
+elastic_sigma = 5.0
+
+affine_prob = 0.7
+preserve_aspect_prob = 0.5
+white_noise_prob = 0.3
+flip_prob = 0.5
+elastic_warp_prob = 0.2
+random_elastic_prob = 0.2
+tps_warp_prob = 0.2
+wall_reflection_prob = 0.1
+
+seed = 0
+
+[model]
+channels = [1, 16, 32, 32, 64, 128]
+separable = true
+adversarial_prob = 0.2
+lr = 0.001
+weight_decay = 0.00001
+arch = 'ae'
