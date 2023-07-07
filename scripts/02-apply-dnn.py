@@ -4,9 +4,8 @@ import torch
 from pathlib import Path
 from toolz import partial
 from tqdm.auto import tqdm
-from aging.size_norm.predict import predict
-from aging.size_norm.lightning import SizeNormModel
 from aging.size_norm.data import Session
+from aging.size_norm.lightning import SizeNormModel, predict
 
 
 def predict_and_save(path, model, key):
@@ -35,7 +34,7 @@ def hasnt_key(path, key):
 def main(data_path, model_path, key):
     print("Processing files from", data_path)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = SizeNormModel.load_from_checkpoint(model_path, map_location=device)
+    model = torch.jit.load(model_path, map_location=device)
 
     data_path = Path(data_path)
     if data_path.is_dir():
@@ -45,7 +44,10 @@ def main(data_path, model_path, key):
             ),
             desc="Files",
         ):
-            predict_and_save(path, model, key)
+            try:
+                predict_and_save(path, model, key)
+            except Exception:
+                continue
     else:
         predict_and_save(data_path, model, key)
 

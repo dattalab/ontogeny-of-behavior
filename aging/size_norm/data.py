@@ -7,9 +7,7 @@ from pathlib import Path
 from typing import Tuple, Union
 from dataclasses import dataclass
 from torch.utils.data import Dataset
-from kornia.geometry import transform
-from torchvision.transforms import ElasticTransform
-from toolz import concatv
+from kornia import augmentation
 from typing import Union
 
 
@@ -18,16 +16,23 @@ class AugmentationParams:
     angle_range: Tuple[int, int] = (-80, 80)
     scale_x: Tuple[float, float] = (0.5, 1.85)
     scale_y: Tuple[float, float] = (0.5, 1.85)
+    scale_z: Tuple[float, float] = (0.8, 1.2)
     translate_x: Tuple[float, float] = (-0.2, 0.2)
     translate_y: Tuple[float, float] = (-0.3, 0.3)
     height: Tuple[int, int] = (-5, 5)
     white_noise_scale: float = 3  # mm
 
-    elastic_alpha: float = 80.0
-    elastic_sigma: float = 5.0
+    elastic_alpha: float = 2.0
+    elastic_sigma: float = 9.0
+    elastic_ksize: int = 61
+    elastic_flag: bool = True
 
     # transform probabilities
-    affine_prob: float = 0.7  # of each component
+    rotation_prob: float = 0.7
+    translation_prob: float = 0.7
+    scale_prob: float = 0.7
+    height_offset_prob: float = 0.5
+    height_scale_prob: float = 0.7
     preserve_aspect_prob: float = 0.5
     white_noise_prob: float = 0.3
     flip_prob: float = 0.5
@@ -42,53 +47,14 @@ class AugmentationParams:
 
 @dataclass
 class TrainingPaths:
-    training: Union[str, Path]
-    wall_noise: Union[str, Path]
+    training: str | Path
+    wall_noise: str | Path
+    validation: str | Path
 
-
-# affine transforms
-def affine(img, params: AugmentationParams):
-    # scaling
-    if params.rng.random() < params.preserve_aspect_prob:
-        scale = torch.rand(1, 1) * (max(concatv(params.scale_x, params.scale_y)) - min(concatv(params.scale_x, params.scale_y))) + min(concatv(params.scale_x, params.scale_y))
-    else:
-        scale = torch.rand(1, 2)
-        scale[..., 0] = scale[..., 0] * (params.scale_x[1] - params.scale_x[0]) + params.scale_x[0]
-        scale[..., 1] = scale[..., 1] * (params.scale_y[1] - params.scale_y[0]) + params.scale_y[0]
-    mode = params.rng.choice(['nearest', 'bilinear'])
-    if params.rng.random() < params.affine_prob:
-        img = transform.scale(img, scale, mode=mode)
-
-    # rotation
-    angle = torch.rand(1) * (params.angle_range[1] - params.angle_range[0]) + params.angle_range[0]
-    mode = params.rng.choice(['nearest', 'bilinear'])
-    if params.rng.random() < params.affine_prob:
-        img = transform.rotate(img, angle, mode=mode)
-
-    # translation
-    translate = torch.rand(1, 2)
-    translate[..., 0] = translate[..., 0] * (params.translate_x[1] - params.translate_x[0]) + params.translate_x[0]
-    translate[..., 1] = translate[..., 1] * (params.translate_y[1] - params.translate_y[0]) + params.translate_y[0]
-    translate = translate * torch.tensor(img.shape[-2:])
-    mode = params.rng.choice(['nearest', 'bilinear'])
-    if params.rng.random() < params.affine_prob:
-        img = transform.translate(img, translate, mode=mode)
-
-    # offset
-    offset = torch.rand(1) * (params.height[1] - params.height[0]) + params.height[0]
-    offset = (img > 0) * offset
-    if params.rng.random() < params.affine_prob:
-        img = img + offset
-        img = torch.clamp(img, 0, None)
-
-    return img
-
-def flip(img):
-    return transform.vflip(transform.hflip(img))
 
 # add noise
-def white_noise(img, params: AugmentationParams):
-    img = img + torch.randn_like(img) * params.white_noise_scale
+def white_noise(img: torch.Tensor, params: AugmentationParams):
+    img = img + torch.randn_like(img, device=img.device) * params.white_noise_scale
     return torch.clamp(img, 0, None)
 
 def normalize(img):
@@ -96,11 +62,6 @@ def normalize(img):
 
 def unnormalize(img):
     return img * 100
-
-# random non-linear warping
-def random_elastic(img, params: AugmentationParams):
-    xf = ElasticTransform(params.elastic_alpha, params.elastic_sigma)
-    return xf(img)
 
 # specific non-linear warping
 def warp_tps(img):
@@ -111,7 +72,7 @@ def warp_elastic(img):
 
 # add wall reflections
 def add_reflection(img, wall):
-    wall = wall * (img == 0)
+    wall = wall * (img < 0.2)
     return img + wall
 
 
@@ -121,17 +82,67 @@ def clean(frame, tail_ksize=11):
 
     return frame * mask
 
+# --- augmentation pipeline ---
+class Augmenter:
+    def __init__(self, params: AugmentationParams, wall_noise_path):
+        self.params = params
+        self.rotate = augmentation.RandomRotation(params.angle_range, p=params.rotation_prob)
+        self.flip = augmentation.RandomRotation([179, 181], p=params.flip_prob)
+        self.translate = augmentation.RandomAffine(degrees=0, translate=(params.translate_x[1], params.translate_y[1]), p=params.translation_prob)
+        self.scale = augmentation.RandomAffine(degrees=0, scale=params.scale_x + params.scale_y, p=params.scale_prob)
+        self.iso_scale = augmentation.RandomAffine(degrees=0, scale=(min(params.scale_x + params.scale_y), max(params.scale_x + params.scale_y)), p=params.scale_prob)
 
-# --- dataset and augmentation pipeline --- #
+        with h5py.File(wall_noise_path, 'r') as f:
+            self.wall_noise = torch.tensor(f['wall_frames'][()], dtype=torch.float32)
+
+        self.elastic = augmentation.RandomElasticTransform(kernel_size=(params.elastic_ksize, ) * 2, alpha=(params.elastic_alpha, ) * 2, sigma=(params.elastic_sigma, ) * 2, p=params.random_elastic_prob)
+
+    def __call__(self, data):
+
+        ### affine transforms ###
+        if self.params.rng.random() < self.params.preserve_aspect_prob:
+            data = self.iso_scale(data)
+        else:
+            data = self.scale(data)
+
+        data = self.rotate(data)
+        data = self.translate(data)
+
+        height_scale = torch.rand(len(data), *(1,) * (data.ndim - 1), device=data.device) * (self.params.scale_z[1] - self.params.scale_z[0]) + self.params.scale_z[0]
+        if self.params.rng.random() < self.params.height_scale_prob:
+            data = data * height_scale
+
+        offset = torch.rand(len(data), *(1,) * (data.ndim - 1), device=data.device) * (self.params.height[1] - self.params.height[0]) + self.params.height[0]
+        offset = (data > 0) * offset
+        if self.params.rng.random() < self.params.height_offset_prob:
+            data = data + offset
+            data = torch.clamp(data, 0, None)
+
+        data = self.flip(data)
+
+        ### non-linear transforms ###
+        if self.params.elastic_flag:
+            data = self.elastic(data)
+
+        # add wall noise
+        if self.params.rng.random() < self.params.wall_reflection_prob:
+            inds = self.params.rng.choices(range(len(self.wall_noise)), k=len(data))
+            data = add_reflection(data, self.wall_noise[inds].to(data.device).unsqueeze(1))
+
+        # add white noise
+        if self.params.rng.random() < self.params.white_noise_prob:
+            data = white_noise(data, self.params)
+
+        return normalize(data)
+
+
+# --- dataset pipeline --- #
 class SizeNormDataset(Dataset):
     def __init__(self, paths: TrainingPaths, aug_params: AugmentationParams):
         self.aug_params = aug_params
 
         with h5py.File(paths.training, 'r') as h5f:
             self.frames = h5f['training_frames'][()]
-
-        with h5py.File(paths.wall_noise, 'r') as h5f:
-            self.wall_noise = h5f['wall_frames'][()]
 
     def __len__(self):
         return len(self.frames)
@@ -141,26 +152,6 @@ class SizeNormDataset(Dataset):
         target = normalize(torch.tensor(clean(_input), dtype=torch.float32))
         _input = torch.tensor(_input, dtype=torch.float32).view(1, 1, *_input.shape)
 
-        # affine transforms
-        _input = affine(_input, self.aug_params)
-
-        if self.aug_params.rng.random() < self.aug_params.flip_prob:
-            _input = flip(_input)
-
-        # random non-linear transforms
-        if self.aug_params.rng.random() < self.aug_params.random_elastic_prob:
-            _input = random_elastic(_input, self.aug_params)
-
-        # then add the noise (wall, white, etc.)
-        if self.aug_params.rng.random() < self.aug_params.white_noise_prob:
-            _input = white_noise(_input, self.aug_params)
-
-        if self.aug_params.rng.random() < self.aug_params.wall_reflection_prob:
-            wall = self.aug_params.rng.choice(self.wall_noise)
-            _input = add_reflection(_input, torch.tensor(wall).view(_input.shape))
-
-        _input = normalize(_input)
-
         return _input.view(1, *_input.shape[-2:]), target.unsqueeze(0)
 
 
@@ -168,8 +159,8 @@ class Session(Dataset):
     def __init__(self, data: Union[str, Path, np.ndarray]):
         if isinstance(data, (str, Path)):
             self.path = data
-            self.h5f = h5py.File(data, 'r')
-            self.frames = self.h5f['frames'][()]
+            with h5py.File(data, 'r') as h5f:
+                self.frames = h5f['frames'][()]
         elif isinstance(data, np.ndarray):
             self.frames = data
 
@@ -178,7 +169,3 @@ class Session(Dataset):
 
     def __len__(self):
         return len(self.frames)
-
-    def __del__(self):
-        if hasattr(self, 'h5f'):
-            self.h5f.close()

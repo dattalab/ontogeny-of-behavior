@@ -1,4 +1,5 @@
 import os
+from typing import Union
 import PIL
 import torch
 import random
@@ -6,13 +7,58 @@ import numpy as np
 import lightning.pytorch as pl
 import torch.nn.functional as F
 from io import BytesIO
-from lightning.pytorch import Callback
+from pathlib import Path
+from tqdm.auto import tqdm
 from ipywidgets import Image
 from IPython.display import display
+from lightning.pytorch import Callback
 from torchvision.utils import make_grid
 from torch.utils.data import DataLoader, RandomSampler
-from .data import AugmentationParams, SizeNormDataset, TrainingPaths
-from .models import Autoencoder
+from aging.size_norm.data import (
+    AugmentationParams,
+    Session,
+    SizeNormDataset,
+    TrainingPaths,
+    Augmenter,
+    unnormalize,
+)
+from aging.size_norm.models import Autoencoder
+from aging.size_norm.test import test
+
+
+class BehaviorValidation(Callback):
+    def __init__(
+        self,
+        validation_path: str | Path,
+        log_interval: int = 15,
+        max_frames: int = 8_000,
+    ):
+        super().__init__()
+        self.log_interval = log_interval
+        self.val_path = validation_path
+        self.max_frames = max_frames
+
+    def on_train_epoch_end(
+        self, trainer: pl.Trainer, pl_module: pl.LightningModule
+    ) -> None:
+        if trainer.current_epoch % self.log_interval == 0 and trainer.current_epoch > 0:
+            results = test(
+                self.val_path,
+                pl_module,
+                Path(trainer.log_dir) / f"test_epoch_{trainer.current_epoch:03d}",
+                self.max_frames,
+            )
+            results = results.mean(numeric_only=True)
+            pl_module.log_dict(
+                dict(
+                    val_r2=results["fit_score"],
+                    val_mse=results["fit_mse"],
+                    heldout_r2=results["heldout_score"],
+                    heldout_mse=results["heldout_mse"],
+                    correlation=results["corr"],
+                )
+            )
+            pl_module.unfreeze()
 
 
 class ImageDisplay(Callback):
@@ -38,6 +84,8 @@ class ImageDisplay(Callback):
                 display(self.image)
                 self.displayed_image = True
             frames, target = batch
+            if isinstance(frames, list):
+                frames = frames[0]
             yhat = pl_module(frames.to(pl_module.device))
 
             frame_grid = make_grid(frames[: self.num_samples], nrow=1, normalize=True)
@@ -98,14 +146,14 @@ class SizeNormModel(pl.LightningModule):
         aug_params: AugmentationParams = AugmentationParams(),
         image_dim=80,
         model=Autoencoder,
-        channels=(1, 4, 8, 16, 32),
-        separable=True,
+        model_params=dict(),
         batch_size=64,
         adversarial_prob=0.3,
         lr=1e-3,
         weight_decay=1e-5,
         seed=0,
         device="cuda" if torch.cuda.is_available() else "cpu",
+        lr_scheduler_params=dict(patience=16),
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -116,17 +164,24 @@ class SizeNormModel(pl.LightningModule):
         self.weight_decay = weight_decay
         self.paths = paths
         self.aug_params = aug_params
+        self.lr_scheduler_params = lr_scheduler_params
 
         self.model = torch.jit.trace(
-            model(channels, separable).to(device),
+            model(**model_params).to(device),
             torch.zeros(batch_size, 1, image_dim, image_dim, device=device),
         )
-        # self.model = model(channels, separable).to(device)
-        # self.model = torch.compile(self.model)
+        # self.model = model(**model_params).to(device)
         self.rng = random.Random(seed)
+        self.augment = Augmenter(aug_params, paths.wall_noise)
 
     def forward(self, x):
         return self.model(x)
+
+    def on_after_batch_transfer(self, batch, dataloader_idx):
+        x, y = batch
+        if self.trainer.training or self.trainer.validating:
+            x = self.augment(x)
+        return x, y
 
     def training_step(self, batch, batch_idx):
         frames, target = batch
@@ -146,6 +201,7 @@ class SizeNormModel(pl.LightningModule):
             yhat = self.model(frames)
 
         loss = F.mse_loss(yhat, target)
+        self.log("train_loss", loss)
         return dict(loss=loss)
 
     def validation_step(self, batch, batch_idx):
@@ -164,7 +220,8 @@ class SizeNormModel(pl.LightningModule):
             optimizer=optimizer,
             lr_scheduler=dict(
                 scheduler=torch.optim.lr_scheduler.ReduceLROnPlateau(
-                    optimizer, patience=15
+                    optimizer,
+                    **self.lr_scheduler_params,
                 ),
                 monitor="val_loss",
             ),
@@ -174,7 +231,7 @@ class SizeNormModel(pl.LightningModule):
         generator = torch.Generator().manual_seed(self.seed)
         dataset = SizeNormDataset(self.paths, self.aug_params)
         self.training_data, self.val_data = torch.utils.data.random_split(
-            dataset, [0.925, 0.075], generator=generator
+            dataset, [0.96, 0.04], generator=generator
         )
 
     def train_dataloader(self):
@@ -198,3 +255,28 @@ class SizeNormModel(pl.LightningModule):
             batch_size=self.batch_size,
             num_workers=int(os.environ.get("SLURM_CPUS_PER_TASK", default=1)),
         )
+
+
+def predict(
+    data: Session,
+    model: Union[str, Path, torch.nn.Module],
+    batch_size=512,
+    **tqdm_kwargs,
+):
+    dataset = DataLoader(data, batch_size=batch_size, shuffle=False)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if not isinstance(model, torch.nn.Module):
+        model = SizeNormModel.load_from_checkpoint(model, map_location=device)
+        model.freeze()
+    model.eval()
+
+    output = []
+    with torch.no_grad():
+        for batch in tqdm(dataset, **tqdm_kwargs):
+            output.append(unnormalize(model(batch.to(device))).cpu().numpy().squeeze())
+    output = np.concatenate(output, axis=0)
+    del dataset
+    del data
+
+    return output

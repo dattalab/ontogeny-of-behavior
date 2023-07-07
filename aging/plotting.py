@@ -13,6 +13,10 @@ class PlotConfig:
     save_path: Path = Path("/n/groups/datta/win/figures/ontogeny")
 
 
+def figure(width, height, **kwargs):
+    return plt.figure(figsize=(width, height), dpi=300, **kwargs)
+
+
 def format_plots():
     '''
     Defines a series of formatting options for plots and applies them globally.
