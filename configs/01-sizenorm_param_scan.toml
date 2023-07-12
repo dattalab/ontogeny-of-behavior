@@ -1,18 +1,19 @@
 [paths]
-saving = '/n/groups/datta/win/longtogeny/size_norm/models/param_scan'
+saving = '/n/groups/datta/win/longtogeny/size_norm/models/param_scan_06'
 
-# first, scan over model parameters, instead of augmentation parameters
-# use best model to scan over augmentation parameters
-# [augmentation]
-# scale_x = [0.1, 2.5]
-# scale_y = [0.1, 2.5]
+[model.stage1]  # model depth and width
+depth = [2, 4]  # range
+arch = ['ae', 'unet', 'efficient', 'efficient_unet']
+init_channel = [4, 8, 16, 32, 64, 128]  # list
+
+[model.stage2]
+arch = ['ae', 'unet', 'efficient', 'efficient_unet']
+init_channel = [4, 8, 16, 32]  # list
+channel_scaling = [2.5, 4.0, 4.0]
 
 
-[model]
-channels = [2, 4, 8, 16, 24, 32, 64, 128, 256, 512, 1024]
-channel_depth = [1, 5]
-separable = [false, true]
-adversarial_prob = [0, 1]
-lr = [-4, -2]
-weight_decay = [-6, -3]
-arch = ['ae', 'unet']
+[model.stage3]  # model hyperparameters
+activation = ['ReLU', 'ELU', 'LeakyReLU', 'SiLU', 'GELU']  # list
+adversarial_prob = [0.0, 1.0, 6.0]
+lr = [-4, -2, 3]
+weight_decay = [-6, -3, 4]

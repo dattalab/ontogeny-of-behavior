@@ -5,29 +5,23 @@ validation='/n/groups/datta/win/longtogeny/data/size_network/male_ontogeny_valid
 # validation='/n/groups/datta/win/longtogeny/data/size_network/female_ontogeny_validation.h5'
 
 wall_noise='/n/groups/datta/win/longtogeny/data/size_network/training_data/wall_noise.h5'
-saving='/n/groups/datta/win/longtogeny/size_norm/models/pre_final_model'
+saving='/n/groups/datta/win/longtogeny/size_norm/models/param_scan_02'
 
 [augmentation]
-angle_range = [-60, 60]
-scale_x = [0.45, 1.7]
-scale_y = [0.45, 1.7]
-scale_z = [0.7, 1.3]
+angle_range = [-80, 80]
+scale_x = [0.4, 1.7]
+scale_y = [0.4, 1.7]
 translate_x = [-0.2, 0.2]  # proportional
 translate_y = [-0.3, 0.3]  # proportional
-height = [-7, 7]
+height = [-5, 5]
 white_noise_scale = 3
 
-elastic_alpha = 1.75
+elastic_alpha = 2.0
 elastic_sigma = 9.0
 elastic_ksize = 61
-elastic_flag = true
 
-rotation_prob = 0.7
-translation_prob = 0.7
-scale_prob = 0.7
-height_offset_prob = 0.7
-height_scale_prob = 0.7
-preserve_aspect_prob = 0.6
+affine_prob = 0.7
+preserve_aspect_prob = 0.5
 white_noise_prob = 0.3
 flip_prob = 0.5
 elastic_warp_prob = 0.2
@@ -37,33 +31,20 @@ wall_reflection_prob = 0.1
 
 seed = 0
 
-[callbacks.validation]
-log_interval = 200  # epochs
-max_frames = 6000
-
-[callbacks.stopping]
-patience = 30  # epochs
-
-[trainer]
-max_epochs = 200
-
 [model]
 depth = 4
-init_channel = 16
+init_channel = 8
 input_channel = 16
 init_depth = 1
 channel_scaling = 2.0
 depth_scaling = 1.0
-activation = 'GELU'
+activation = 'LeakyReLU'
 
 [model.lightning]
-adversarial_prob = 0.01
+adversarial_prob = 0.2
 lr = 0.001
 weight_decay = 0.00001
-arch = 'efficient_unet'  # ae, unet, efficient, efficient_unet
-
-[model.lightning.lr_scheduler_params]
-patience = 20
+arch = 'ae'  # ae, unet, efficient
 
 [model.ae]
 double_conv = true
@@ -74,9 +55,5 @@ double_conv = true
 separable = true
 
 [model.efficient]
-fused = 1
-expansion = 4
-
-[model.efficient_unet]
-fused = 1
+fused = 2
 expansion = 4
