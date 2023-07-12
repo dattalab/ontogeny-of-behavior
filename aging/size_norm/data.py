@@ -76,9 +76,11 @@ def add_reflection(img, wall):
     return img + wall
 
 
-def clean(frame, tail_ksize=11):
+def clean(frame, tail_ksize=11, height_thresh=12, dilate=True):
     tailfilter = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (tail_ksize, ) * 2)
-    mask = cv2.morphologyEx((frame > 0).astype('uint8'), cv2.MORPH_OPEN, tailfilter)
+    mask = cv2.morphologyEx((frame > height_thresh).astype('uint8'), cv2.MORPH_OPEN, tailfilter)
+    if dilate:
+        mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, ) * 2))
 
     return frame * mask
 
