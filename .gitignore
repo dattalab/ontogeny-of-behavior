@@ -12,3 +12,4 @@ lightning_logs/
 *.png
 
 __pycache__
+.DS_Store
