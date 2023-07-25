@@ -1,19 +1,32 @@
 [paths]
-saving = '/n/groups/datta/win/longtogeny/size_norm/models/param_scan_06'
+saving = '/n/groups/datta/win/longtogeny/size_norm/models/big_param_scan_00'
 
-[model.stage1]  # model depth and width
-depth = [2, 4]  # range
+# stage 1: find model architecture that maximizes performance - vary number of parameters
+[model.stage1]
 arch = ['ae', 'unet', 'efficient', 'efficient_unet']
-init_channel = [4, 8, 16, 32, 64, 128]  # list
+init_channel = [4, 8, 16, 32, 64, 128, 256, 512]  # list
+channel_scaling = [1.5, 4.0, 6.0]
 
+# stage 2 - fix arch, network depth
 [model.stage2]
-arch = ['ae', 'unet', 'efficient', 'efficient_unet']
-init_channel = [4, 8, 16, 32]  # list
-channel_scaling = [2.5, 4.0, 4.0]
+depth = [2, 4]
 
-
-[model.stage3]  # model hyperparameters
+# stage 3 - fix arch, other model params
+[model.stage3]
 activation = ['ReLU', 'ELU', 'LeakyReLU', 'SiLU', 'GELU']  # list
+
+# stage 4 - fix arch, other model params
+[model.stage4]
+double_conv = [true, false]
+residual = [true, false]
+
+# stage 5 - fixed model parameters, training hyperparameters
+[model.stage5]
 adversarial_prob = [0.0, 1.0, 6.0]
 lr = [-4, -2, 3]
 weight_decay = [-6, -3, 4]
+
+# stage 6 - fixed model parameters, adversarial age model parameters
+[model.stage6]
+adversarial_arch = ["linear", "nonlinear"]
+adversarial_type = ["class", "continuous"]

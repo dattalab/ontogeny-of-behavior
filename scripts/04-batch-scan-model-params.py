@@ -7,16 +7,16 @@ import numpy as np
 from tqdm.auto import tqdm
 from pathlib import Path
 from copy import deepcopy
-from toolz import merge, valmap
+from toolz import valmap
 from sklearn.model_selection import ParameterGrid
 
 script = """#!/bin/env bash
 #SBATCH -c 1
 #SBATCH -n 1
-#SBATCH --mem=10G
+#SBATCH --mem=20G
 #SBATCH -p gpu_quad
 #SBATCH --gres=gpu:1
-#SBATCH -t 03:30:00
+#SBATCH -t 02:00:00
 #SBATCH --output={folder}/model-scan-%j.out
 
 source $HOME/.bashrc

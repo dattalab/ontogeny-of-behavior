@@ -1,14 +1,18 @@
+import re
 import cv2
 import h5py
 import torch
 import random
+import joblib
 import numpy as np
 from pathlib import Path
+from toolz import valfilter
 from typing import Tuple, Union
 from dataclasses import dataclass
 from torch.utils.data import Dataset
 from kornia import augmentation
 from typing import Union
+from sklearn.preprocessing import LabelEncoder
 
 
 @dataclass
@@ -50,6 +54,7 @@ class TrainingPaths:
     training: str | Path
     wall_noise: str | Path
     validation: str | Path
+    age_validation: str | Path
 
 
 # add noise
@@ -58,10 +63,10 @@ def white_noise(img: torch.Tensor, params: AugmentationParams):
     return torch.clamp(img, 0, None)
 
 def normalize(img):
-    return img / 100
+    return img / 110
 
 def unnormalize(img):
-    return img * 100
+    return img * 110
 
 # specific non-linear warping
 def warp_tps(img):
@@ -140,11 +145,16 @@ class Augmenter:
 
 # --- dataset pipeline --- #
 class SizeNormDataset(Dataset):
-    def __init__(self, paths: TrainingPaths, aug_params: AugmentationParams):
-        self.aug_params = aug_params
-
+    def __init__(self, paths: TrainingPaths):
         with h5py.File(paths.training, 'r') as h5f:
             self.frames = h5f['training_frames'][()]
+
+        # remove "bad" images
+        cleaning_metadata = joblib.load(Path(paths.training).parent / "cleaning_metadata.p")
+        dump = valfilter(lambda x: x == "remove", cleaning_metadata)
+        mask = np.ones(len(self.frames), dtype=bool)
+        mask[list(dump)] = 0
+        self.frames = self.frames[mask]
 
     def __len__(self):
         return len(self.frames)
@@ -171,3 +181,57 @@ class Session(Dataset):
 
     def __len__(self):
         return len(self.frames)
+
+def str_to_age(s):
+    nums = int(re.match(r'\d+', s).group())
+    if 'm' in s:
+        return nums * 30 / 7
+    return nums
+
+
+class AgeClassifierDataset(Dataset):
+    def __init__(self, data_path: str | Path, fake_len, seed=0, y_type='class'):
+        rng = np.random.RandomState(seed)
+        self.y_type = y_type
+        data = {}
+        with h5py.File(data_path, 'r') as h5f:
+            for key in filter(lambda x: '22month' not in x, h5f):
+                data[key] = h5f[key][()]
+        if y_type == 'class':
+            y = np.concatenate([[key] * len(data[key]) for key in data])
+            y = LabelEncoder().fit_transform(y)
+        elif y_type == 'continuous':
+            y = np.log(np.concatenate([[str_to_age(key)] * len(data[key]) for key in data]))
+        idx = rng.permutation(np.arange(len(y)))
+        # TODO: make sure I have same number of datapoints for each class
+        #    looks like this is true by default
+        self.data = np.concatenate(list(data.values()), axis=0)[idx]
+        self.y = y[idx]
+        if fake_len is None or fake_len < 0:
+            self.fake_len = len(self.data)
+        else:
+            self.fake_len = fake_len
+
+    def __getitem__(self, idx):
+        y_out = self.y[idx % len(self.data)]
+        if self.y_type == 'continuous':
+            y_out = torch.tensor(y_out, dtype=torch.float32)
+        return normalize(torch.tensor(self.data[idx % len(self.data)], dtype=torch.float32).unsqueeze(0)), y_out
+
+    @property
+    def n_classes(self):
+        return len(np.unique(self.y))
+
+    def __len__(self):
+        return self.fake_len
+
+
+class ConcatDataset(Dataset):
+    def __init__(self, *datasets):
+        self.datasets = datasets
+
+    def __getitem__(self, idx):
+        return tuple(d[idx] for d in self.datasets)
+
+    def __len__(self):
+        return min(map(len, self.datasets))

@@ -6,8 +6,7 @@ import lightning.pytorch as pl
 import aging.size_norm.models as models
 from pathlib import Path
 from aging.size_norm.lightning import SizeNormModel, BehaviorValidation
-from aging.size_norm.test import test
-from toolz import keyfilter, dissoc, merge, valfilter, assoc
+from toolz import keyfilter, dissoc, merge, valfilter, assoc, get_in
 from aging.size_norm.data import TrainingPaths, AugmentationParams
 from lightning.pytorch.loggers import CSVLogger, TensorBoardLogger
 from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
@@ -19,43 +18,49 @@ def keep(d, keys):
 
 @click.command()
 @click.argument("config_path", type=click.Path(exists=True))
-@click.option('--checkpoint', default=None, type=click.Path(exists=True))
+@click.option("--checkpoint", default=None, type=click.Path(exists=True))
 def main(config_path, checkpoint):
     config = toml.load(config_path)
-    save_folder = Path(config['paths']['saving'])
+    save_folder = Path(config["paths"]["saving"])
     save_folder.mkdir(exist_ok=True, parents=True)
-    pl.seed_everything(config['augmentation']['seed'])
+    pl.seed_everything(config["augmentation"]["seed"])
 
-    paths = keep(config['paths'], ["training", "wall_noise", "validation"])
+    paths = keep(
+        config["paths"], ["training", "wall_noise", "validation", "age_validation"]
+    )
     training_paths = TrainingPaths(**paths)
-    config['augmentation']['rng'] = random.Random(config['augmentation']['seed'])
-    augmentation = AugmentationParams(**dissoc(config['augmentation'], 'seed'))
+    config["augmentation"]["rng"] = random.Random(config["augmentation"]["seed"])
+    augmentation = AugmentationParams(**dissoc(config["augmentation"], "seed"))
 
-    match config['model']['lightning']['arch']:
-        case 'ae':
+    match get_in(["model", "lightning", "arch"], config):
+        case "ae":
             model_arch = models.Autoencoder
-        case 'unet':
+        case "unet":
             model_arch = models.UNet
-        case 'efficient':
+        case "efficient":
             model_arch = models.EfficientAutoencoder
-        case 'efficient_unet':
+        case "efficient_unet":
             model_arch = models.EfficientUNet
         case _:
             raise ValueError(f"Unknown model architecture {config['model']['arch']}")
 
-    model_params = merge(config['model'], config['model'][config['model']['lightning']['arch']])
+    model_params = merge(
+        config["model"], config["model"][config["model"]["lightning"]["arch"]]
+    )
     model_params = valfilter(lambda x: not isinstance(x, dict), model_params)
-    if 'activation' in model_params:
-        model_params = assoc(model_params, 'activation', getattr(torch.nn, model_params['activation']))
+    if "activation" in model_params:
+        model_params = assoc(
+            model_params, "activation", getattr(torch.nn, model_params["activation"])
+        )
 
     model = SizeNormModel(
         training_paths,
         augmentation,
         model=model_arch,
         model_params=model_params,
-        batch_size=64,
-        **dissoc(config['model']['lightning'], 'arch'),
-        seed=config['augmentation']['seed']
+        batch_size=64 if get_in(['model', 'init_channel'], config, 32) < 512 else 32,
+        **dissoc(config["model"]["lightning"], "arch"),
+        seed=config["augmentation"]["seed"],
     )
 
     ckpt_cb = ModelCheckpoint(
@@ -68,34 +73,61 @@ def main(config_path, checkpoint):
 
     early_stopping_cb = EarlyStopping(
         monitor="val_loss",
-        patience=config.get('callbacks', {}).get('stopping', {}).get('patience', 13),
+        patience=get_in(["callbacks", "stopping", "patience"], config, 13),
         mode="min",
     )
 
-    beh_val_cb = BehaviorValidation(
+    dynamics_cb = BehaviorValidation(
         training_paths.validation,
-        log_interval=config.get('callbacks', {}).get('validation', {}).get('log_interval', 30),
-        max_frames=config.get('callabacks', {}).get('validation', {}).get('max_frames', 8000),
+        log_interval=get_in(
+            ["callbacks", "dynamics_validation", "log_interval"], config, 30
+        ),
+        max_frames=get_in(
+            ["callbacks", "dynamics_validation", "max_frames"], config, 8000
+        ),
+        validation_type="dynamics",
+    )
+
+    age_cb = BehaviorValidation(
+        training_paths.age_validation,
+        log_interval=get_in(
+            ["callbacks", "age_validation", "log_interval"], config, 30
+        ),
+        max_frames=get_in(["callbacks", "age_validation", "max_frames"], config, 8000),
+        validation_type="classification",
     )
 
     trainer = pl.Trainer(
-        max_epochs=config.get('trainer', {}).get('max_epochs', 85),
+        max_epochs=get_in(["trainer", "max_epochs"], config, 85),
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
-        callbacks=[ckpt_cb, early_stopping_cb, beh_val_cb],
-        precision='16-mixed' if torch.cuda.is_available() else "bf16-mixed",
-        logger=[CSVLogger(save_folder, name="size_norm_scan"), TensorBoardLogger(save_folder, name="size_norm_scan")],
+        callbacks=[ckpt_cb, early_stopping_cb, dynamics_cb, age_cb],
+        precision="16-mixed" if torch.cuda.is_available() else "bf16-mixed",
+        logger=[
+            CSVLogger(save_folder, name="size_norm_scan"),
+            TensorBoardLogger(save_folder, name="size_norm_scan"),
+        ],
+        accumulate_grad_batches=1 if get_in(['model', 'init_channel'], config, 32) < 512 else 2
     )
     trainer.fit(model, ckpt_path=checkpoint)
 
     model = SizeNormModel.load_from_checkpoint(ckpt_cb.best_model_path)
-
     # save jit version of model
-    torch.jit.save(model.model, save_folder / "model.pt")
+    if model.hparams.jit:
+        torch.jit.save(model.model, save_folder / "model.pt")
+    else:
+        mdl = torch.jit.trace(
+            model.model,
+            torch.zeros(
+                model.hparams.batch_size,
+                1,
+                model.hparams.image_dim,
+                model.hparams.image_dim,
+                device=model.device,
+            ),
+        )
+        torch.jit.save(mdl, save_folder / "model.pt")
 
-    # test the model
-    # test(training_paths.validation, model, save_folder / "test")
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

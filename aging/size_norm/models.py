@@ -53,7 +53,7 @@ class ResidualAdd(nn.Module):
         self.shortcut = shortcut
 
     def forward(self, x):
-        return self.block(x) + (self.shortcut(x) if self.shortcut else x)
+        return self.block(x) + (self.shortcut(x) if self.shortcut is not None else x)
 
 
 # optimized/compressed form of an inverted residual block
@@ -166,18 +166,20 @@ class EfficientUNetUp(nn.Module):
         return self.block(x1)
 
 
-class DoubleConv(nn.Sequential):
+class DoubleConv(nn.Module):
     def __init__(
         self,
         in_channels,
         out_channels,
         mid_channels=None,
         separable=True,
+        residual=False,
         activation=nn.LeakyReLU,
     ):
+        super().__init__()
         if mid_channels is None:
             mid_channels = out_channels
-        super().__init__(
+        self.block = nn.Sequential(
             ConvNormAct(
                 in_channels, mid_channels, separable=separable, activation=activation
             ),
@@ -185,6 +187,16 @@ class DoubleConv(nn.Sequential):
                 mid_channels, out_channels, separable=separable, activation=activation
             ),
         )
+        if residual:
+            self.block = ResidualAdd(
+                self.block,
+                shortcut=ConvNormAct(
+                    in_channels, out_channels, kernel_size=1, activation=activation
+                ),
+            )
+
+    def forward(self, x):
+        return self.block(x)
 
 
 class Down(nn.Module):
@@ -194,10 +206,11 @@ class Down(nn.Module):
         out_channels,
         separable=True,
         double_conv=True,
+        residual=False,
         activation=nn.LeakyReLU,
     ):
         super().__init__()
-        conv = DoubleConv if double_conv else ConvNormAct
+        conv = partial(DoubleConv, residual=residual) if double_conv else ConvNormAct
         self.maxpool_conv = nn.Sequential(
             nn.MaxPool2d(2),
             conv(in_channels, out_channels, separable=separable, activation=activation),
@@ -216,10 +229,11 @@ class Up(nn.Module):
         bilinear=True,
         double_conv=True,
         separable=True,
+        residual=False,
         activation=nn.LeakyReLU,
     ):
         super().__init__()
-        conv = DoubleConv if double_conv else ConvNormAct
+        conv = partial(DoubleConv, residual=residual) if double_conv else ConvNormAct
         addition = 0 if cat_channels is None else cat_channels
         self.conv = conv(
             in_channels + addition,
@@ -273,6 +287,7 @@ class UNet(nn.Module):
         input_channel: int = 16,
         separable=True,
         double_conv=True,
+        residual=False,
         activation: nn.Module = nn.LeakyReLU,
     ):
         """Channels must include the input channel count (usually 1) as well"""
@@ -281,9 +296,11 @@ class UNet(nn.Module):
         depths = [int(init_depth * depth_scaling**i) for i in range(depth)]
         channels = [input_channel] + channels
 
-        conv = DoubleConv if double_conv else ConvNormAct
+        conv = partial(DoubleConv, residual=residual) if double_conv else ConvNormAct
 
-        self.down = nn.ModuleList([conv(1, input_channel, separable=separable, activation=activation)])
+        self.down = nn.ModuleList(
+            [conv(1, input_channel, separable=separable, activation=activation)]
+        )
         # downsample
         for i in range(depth):
             to_add = []
@@ -293,11 +310,17 @@ class UNet(nn.Module):
                 if j == depths[i] - 1:
                     to_add.append(
                         Down(
-                            in_ch, out_ch, separable=separable, double_conv=double_conv, activation=activation
+                            in_ch,
+                            out_ch,
+                            separable=separable,
+                            double_conv=double_conv,
+                            activation=activation,
                         )
                     )
                 else:
-                    to_add.append(conv(in_ch, out_ch, separable=separable, activation=activation))
+                    to_add.append(
+                        conv(in_ch, out_ch, separable=separable, activation=activation)
+                    )
             self.down.extend(to_add)
 
         self.up = nn.ModuleList([])
@@ -319,7 +342,9 @@ class UNet(nn.Module):
                         )
                     )
                 else:
-                    to_add.append(conv(in_ch, out_ch, separable=separable, activation=activation))
+                    to_add.append(
+                        conv(in_ch, out_ch, separable=separable, activation=activation)
+                    )
             self.up.extend(to_add)
 
         self.up.append(OutConv(channels[0], 1))
@@ -354,6 +379,7 @@ class Autoencoder(nn.Module):
         input_channel: int = 16,
         separable=True,
         double_conv=True,
+        residual=False,
         activation: nn.Module = nn.LeakyReLU,
     ):
         """Channels must include the input channel count (usually 1) as well"""
@@ -362,9 +388,11 @@ class Autoencoder(nn.Module):
         depths = [int(init_depth * depth_scaling**i) for i in range(depth)]
         channels = [input_channel] + channels
 
-        conv = DoubleConv if double_conv else ConvNormAct
+        conv = partial(DoubleConv, residual=residual) if double_conv else ConvNormAct
 
-        self.down = nn.ModuleList([conv(1, input_channel, separable=separable, activation=activation)])
+        self.down = nn.ModuleList(
+            [conv(1, input_channel, separable=separable, activation=activation)]
+        )
         # downsample
         for i in range(depth):
             to_add = []
@@ -375,11 +403,17 @@ class Autoencoder(nn.Module):
                 if j == depths[i] - 1:
                     to_add.append(
                         Down(
-                            in_ch, out_ch, separable=separable, double_conv=double_conv, activation=activation
+                            in_ch,
+                            out_ch,
+                            separable=separable,
+                            double_conv=double_conv,
+                            activation=activation,
                         )
                     )
                 else:
-                    to_add.append(conv(in_ch, out_ch, separable=separable, activation=activation))
+                    to_add.append(
+                        conv(in_ch, out_ch, separable=separable, activation=activation)
+                    )
             self.down.extend(to_add)
 
         self.up = nn.ModuleList([])
@@ -391,10 +425,18 @@ class Autoencoder(nn.Module):
                 out_ch = channels[i]
                 if j == depths[i] - 1:
                     to_add.append(
-                        Up(in_ch, out_ch, separable=separable, double_conv=double_conv, activation=activation)
+                        Up(
+                            in_ch,
+                            out_ch,
+                            separable=separable,
+                            double_conv=double_conv,
+                            activation=activation,
+                        )
                     )
                 else:
-                    to_add.append(conv(in_ch, out_ch, separable=separable, activation=activation))
+                    to_add.append(
+                        conv(in_ch, out_ch, separable=separable, activation=activation)
+                    )
             self.up.extend(to_add)
 
         self.up.append(OutConv(channels[0], 1))
@@ -456,7 +498,10 @@ class EfficientAutoencoder(nn.Module):
             to_add = []
             for j in range(depths[i]):
                 mod = _Module(
-                    channels[i + 1] if j == 0 else channels[i], channels[i], expansion, activation=activation
+                    channels[i + 1] if j == 0 else channels[i],
+                    channels[i],
+                    expansion,
+                    activation=activation,
                 )
                 to_add.append(mod)
             to_add[-1] = EfficientUp(to_add[-1])
@@ -501,18 +546,24 @@ class EfficientUNet(nn.Module):
         channels = [input_channel] + channels
 
         self.down = nn.ModuleList()
-        self.down.append(ConvNormAct(1, input_channel, kernel_size=3, activation=activation))
+        self.down.append(
+            ConvNormAct(1, input_channel, kernel_size=3, activation=activation)
+        )
 
-        for i, (depth, (in_ch, out_ch)) in enumerate(zip(depths, zip(channels[:-1], channels[1:]))):
+        for i, (depth, (in_ch, out_ch)) in enumerate(
+            zip(depths, zip(channels[:-1], channels[1:]))
+        ):
             _Module = FusedMBConv if i < fused else MBConv
             for j in range(depth):
                 if j == depth - 1:
-                    mod = EfficientDown(_Module(
-                        in_ch,
-                        out_ch,
-                        expansion,
-                        activation=activation,
-                    ))
+                    mod = EfficientDown(
+                        _Module(
+                            in_ch,
+                            out_ch,
+                            expansion,
+                            activation=activation,
+                        )
+                    )
                 else:
                     mod = _Module(
                         in_ch,
@@ -526,16 +577,20 @@ class EfficientUNet(nn.Module):
         channels = channels[::-1]
 
         self.up = nn.ModuleList()
-        for i, (depth, (in_ch, out_ch)) in enumerate(zip(depths, zip(channels[:-1], channels[1:]))):
+        for i, (depth, (in_ch, out_ch)) in enumerate(
+            zip(depths, zip(channels[:-1], channels[1:]))
+        ):
             _Module = FusedMBConv if i > (len(channels) - 1 - fused) else MBConv
             for j in range(depth):
                 if j == 0:
-                    mod = EfficientUNetUp(_Module(
-                        in_ch + out_ch,
-                        out_ch,
-                        expansion,
-                        activation=activation,
-                    ))
+                    mod = EfficientUNetUp(
+                        _Module(
+                            in_ch + out_ch,
+                            out_ch,
+                            expansion,
+                            activation=activation,
+                        )
+                    )
                 else:
                     mod = _Module(
                         out_ch,
@@ -563,3 +618,49 @@ class EfficientUNet(nn.Module):
             else:
                 out = layer(out)
         return F.sigmoid(self.final_conv(out))
+
+
+class Regression(nn.Module):
+    def __init__(self, input_size, linear=False):
+        super().__init__()
+        if linear:
+            self.layer = nn.Sequential(
+                nn.Flatten(),
+                nn.Linear(input_size, 1),
+            )
+        else:
+            self.layer = nn.Sequential(
+                ConvNormAct(1, 4, kernel_size=3, separable=True, activation=nn.GELU),
+                Down(4, 8, double_conv=False, activation=nn.GELU),
+                Down(8, 16, double_conv=False, activation=nn.GELU),
+                Down(16, 32, double_conv=False, activation=nn.GELU),
+                Down(32, 64, double_conv=False, activation=nn.GELU),
+                nn.Flatten(),
+                nn.Linear(64 * 5 * 5, 1),
+            )
+
+    def forward(self, x):
+        return self.layer(x)
+
+
+class LogisticRegression(nn.Module):
+    def __init__(self, n_classes, linear=False):
+        super().__init__()
+        if linear:
+            self.layer = nn.Sequential(
+                nn.Flatten(),
+                nn.Linear(80 * 80, n_classes),
+            )
+        else:
+            self.layer = nn.Sequential(
+                ConvNormAct(1, 4, kernel_size=3, separable=True, activation=nn.GELU),
+                Down(4, 8, double_conv=False, activation=nn.GELU),
+                Down(8, 16, double_conv=False, activation=nn.GELU),
+                Down(16, 32, double_conv=False, activation=nn.GELU),
+                Down(32, 64, double_conv=False, activation=nn.GELU),
+                nn.Flatten(),
+                nn.Linear(64 * 5 * 5, n_classes),
+            )
+
+    def forward(self, x):
+        return self.layer(x)
