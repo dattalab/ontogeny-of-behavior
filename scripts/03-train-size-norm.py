@@ -19,7 +19,8 @@ def keep(d, keys):
 @click.command()
 @click.argument("config_path", type=click.Path(exists=True))
 @click.option("--checkpoint", default=None, type=click.Path(exists=True))
-def main(config_path, checkpoint):
+@click.option("--progress", is_flag=True)
+def main(config_path, checkpoint, progress):
     config = toml.load(config_path)
     save_folder = Path(config["paths"]["saving"])
     save_folder.mkdir(exist_ok=True, parents=True)
@@ -70,11 +71,12 @@ def main(config_path, checkpoint):
         save_top_k=1,
         mode="min",
     )
-
+    print("patience", get_in(["callbacks", "stopping", "patience"], config, 13))
     early_stopping_cb = EarlyStopping(
         monitor="val_loss",
         patience=get_in(["callbacks", "stopping", "patience"], config, 13),
         mode="min",
+        verbose=True
     )
 
     dynamics_cb = BehaviorValidation(
@@ -107,26 +109,30 @@ def main(config_path, checkpoint):
             CSVLogger(save_folder, name="size_norm_scan"),
             TensorBoardLogger(save_folder, name="size_norm_scan"),
         ],
-        accumulate_grad_batches=1 if get_in(['model', 'init_channel'], config, 32) < 512 else 2
+        accumulate_grad_batches=1 if get_in(['model', 'init_channel'], config, 32) < 512 else 2,
+        enable_progress_bar=progress,
     )
     trainer.fit(model, ckpt_path=checkpoint)
+    print("Done training")
 
-    model = SizeNormModel.load_from_checkpoint(ckpt_cb.best_model_path)
-    # save jit version of model
-    if model.hparams.jit:
-        torch.jit.save(model.model, save_folder / "model.pt")
-    else:
-        mdl = torch.jit.trace(
-            model.model,
-            torch.zeros(
-                model.hparams.batch_size,
-                1,
-                model.hparams.image_dim,
-                model.hparams.image_dim,
-                device=model.device,
-            ),
-        )
-        torch.jit.save(mdl, save_folder / "model.pt")
+    if not trainer.interrupted:
+        model = SizeNormModel.load_from_checkpoint(ckpt_cb.best_model_path)
+        # save jit version of model
+        if model.hparams.jit:
+            torch.jit.save(model.model, save_folder / "model.pt")
+        else:
+            mdl = torch.jit.trace(
+                model.model,
+                torch.zeros(
+                    model.hparams.batch_size,
+                    1,
+                    model.hparams.image_dim,
+                    model.hparams.image_dim,
+                    device=model.device,
+                ),
+            )
+            torch.jit.save(mdl, save_folder / "model.pt")
+        print("Saved model to folder", str(save_folder))
 
 
 if __name__ == "__main__":

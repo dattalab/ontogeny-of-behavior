@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from io import BytesIO
 from toolz import curry
 from pathlib import Path
+from torch import autocast
 from tqdm.auto import tqdm
 from ipywidgets import Image
 from IPython.display import display
@@ -50,7 +51,7 @@ class BehaviorValidation(Callback):
                 self.val_path,
                 None,
                 seed=pl_module.seed,
-                y_type='class',
+                y_type="class",
             ),
             pl_module,
         )
@@ -154,16 +155,18 @@ def batch_adversarial(model, X, y, attack, **kwargs):
 
 
 @curry
-def exponential_scaling(current_epoch, start_value, max_value, epochs_to_max, start_epoch):
+def exponential_scaling(
+    current_epoch, start_value, max_value, epochs_to_max, start_epoch
+):
     # Calculate the scaling factor based on the time elapsed
     scaling_factor = np.log(max_value / start_value) / epochs_to_max
-    
+
     # Calculate the scaled value at the current time
     scaled_value = start_value * np.exp(scaling_factor * (current_epoch - start_epoch))
 
     # Make sure the scaled value does not exceed the maximum value
     scaled_value = np.clip(scaled_value, 0, max_value)
-    scaled_value *= (current_epoch >= start_epoch)
+    scaled_value *= current_epoch >= start_epoch
 
     return scaled_value
 
@@ -196,8 +199,14 @@ class SizeNormModel(pl.LightningModule):
         adversarial_type: str = "class",  # or continuous
         adversarial_arch: str = "linear",  # or nonlinear
         adversarial_age_scaling=dict(),
+        adversarial_init_epoch: int = 0,
         adversarial_age_lr: float = 1e-3,
         jit=True,
+        max_grad: float = 100,
+        use_l2_regularization_class: bool = False,
+        l2_regularization_class_alpha: float = 1e-6,
+        use_l2_regularization_sn: bool = False,
+        l2_regularization_sn_alpha: float = 1e-6,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -219,11 +228,12 @@ class SizeNormModel(pl.LightningModule):
 
         if adversarial_type == "class" and use_adversarial:
             self.classifier = LogisticRegression(9, adversarial_arch == "linear")
-            self.class_loss = F.cross_entropy
-            self.combined_loss = F.cross_entropy
+            self.class_loss = self.combined_loss = F.cross_entropy
         elif adversarial_type == "continuous" and use_adversarial:
-            self.classifier = Regression(image_dim * image_dim, adversarial_arch == "linear")
-            self.class_loss = r2_loss
+            self.classifier = Regression(
+                image_dim * image_dim, adversarial_arch == "linear"
+            )
+            self.class_loss = F.mse_loss
             self.combined_loss = abs_r2_loss
 
     def forward(self, x, target=None):
@@ -257,42 +267,85 @@ class SizeNormModel(pl.LightningModule):
                 x = self.augment(x)
         return x, y
 
+    def train_classifier(self, frames, y, opt):
+        self.toggle_optimizer(opt)
+        opt.zero_grad()
+        pred_class = self.classifier(torch.where(frames.detach() > 0.015, frames.detach(), 0)).squeeze()
+        class_loss = self.class_loss(pred_class, y)
+        self.log("class_loss", class_loss, prog_bar=True)
+        if self.hparams.adversarial_type == "class":
+            self.log(
+                "class_acc",
+                torch.mean((y == pred_class.argmax(dim=1)).float()),
+            )
+        l2_loss = torch.cat([x.view(-1) for x in self.classifier.parameters()])
+        self.log("90th_percentile_weight_class", torch.quantile(l2_loss, 0.9))
+        if self.hparams.use_l2_regularization_class:
+            l2_loss = torch.norm(l2_loss, 2) / np.sqrt(len(l2_loss))
+            self.log("class_l2_loss", l2_loss)
+            class_loss += self.hparams.l2_regularization_class_alpha * l2_loss
+        self.manual_backward(class_loss)
+        self.clip_gradients(
+            opt,
+            gradient_clip_val=self.hparams.max_grad,
+            gradient_clip_algorithm="norm",
+        )
+        grads = [
+            torch.norm(p.grad, 2)
+            for p in self.classifier.parameters()
+            if p.grad is not None
+        ]
+        self.log("class_norm", sum(grads) / len(grads))
+        opt.step()
+        self.untoggle_optimizer(opt)
+
     def train_with_classifier(self, batch):
         (frames, target), (age_frames, age_class) = batch
         sn_opt, class_opt = self.optimizers()
 
         # train the autoencoder with reconstruction loss and age classification loss
         self.toggle_optimizer(sn_opt)
+        sn_opt.zero_grad()
         yhat = self(frames, target)
         loss = F.mse_loss(yhat, target)
         self.log("train_loss", loss)
 
-        pred_class = self.classifier(self.model(age_frames)).squeeze()
-        scale_factor = self.scaling_fun(self.current_epoch)
-        self.log("scale_factor", scale_factor, prog_bar=True)
-        class_loss = self.combined_loss(pred_class, age_class) * scale_factor
+        class_loss = 0
+        if self.hparams.adversarial_init_epoch + (self.hparams.adversarial_age_scaling['start_epoch']) <= self.current_epoch:
+            age_yhat = self.model(age_frames)
+            pred_class = self.classifier(torch.where(age_yhat > 0.015, age_yhat, 0)).squeeze()
+            #  scaling fun epoch start is relative to adversarial training init epoch
+            scale_factor = self.scaling_fun(self.current_epoch - self.hparams.adversarial_init_epoch)
+            self.log("scale_factor", scale_factor)
+            class_loss = self.combined_loss(pred_class, age_class) * scale_factor
+
+        l2_loss = torch.cat([x.view(-1) for x in self.model.parameters()])
+        self.log("90th_percentile_weight_sn", torch.quantile(l2_loss, 0.9))
+        if self.hparams.use_l2_regularization_sn:
+            l2_loss = torch.norm(l2_loss, 2) / np.sqrt(len(l2_loss))
+            self.log("sn_l2_loss", l2_loss)
+            loss += self.hparams.l2_regularization_sn_alpha * l2_loss
 
         self.manual_backward(loss - class_loss)
+        # clip gradients
+        self.clip_gradients(
+            sn_opt,
+            gradient_clip_val=self.hparams.max_grad,
+            gradient_clip_algorithm="norm",
+        )
+        grads = [
+            torch.norm(p.grad, 2) for p in self.model.parameters() if p.grad is not None
+        ]
+        self.log("sn_norm", sum(grads) / len(grads))
         sn_opt.step()
-        sn_opt.zero_grad()
         self.untoggle_optimizer(sn_opt)
 
         # train the classifier
-        self.toggle_optimizer(class_opt)
-        class_opt.zero_grad()
-        pred_class = self.classifier(self.model(age_frames).detach()).squeeze()
-        class_loss = self.class_loss(pred_class, age_class)
-        self.log("class_loss", class_loss, prog_bar=True)
-        if self.hparams.adversarial_type == "class":
-            self.log(
-                "class_acc",
-                torch.mean((age_class == pred_class.argmax(dim=1)).to(torch.float32)),
-                prog_bar=True,
-            )
-        self.manual_backward(class_loss)
-        class_opt.step()
-        class_opt.zero_grad()
-        self.untoggle_optimizer(class_opt)
+        if self.hparams.adversarial_init_epoch <= self.current_epoch:
+            if self.hparams.adversarial_init_epoch + (self.hparams.adversarial_age_scaling['start_epoch']) <= self.current_epoch:
+                self.train_classifier(age_yhat, age_class, class_opt)
+            else:
+                self.train_classifier(self.model(age_frames), age_class, class_opt)
 
         return dict(loss=loss, class_loss=class_loss, combined_loss=loss + class_loss)
 
@@ -314,7 +367,26 @@ class SizeNormModel(pl.LightningModule):
 
         loss = F.mse_loss(yhat, target)
         self.log("val_loss", loss, prog_bar=True)
+        if batch_idx == 0:
+            self.log_tb_images(frames, target, yhat, batch_idx)
         return dict(loss=loss)
+
+    def log_tb_images(self, image, y_true, y_pred, batch_idx) -> None:
+        # Get tensorboard logger
+        tb_logger = None
+        for logger in self.trainer.loggers:
+            if isinstance(logger, pl.loggers.TensorBoardLogger):
+                tb_logger = logger.experiment
+                break
+        if tb_logger is None:
+            return
+        frame_grid = make_grid(image[:5], nrow=1, normalize=True)
+        target_grid = make_grid(y_true[:5], nrow=1, normalize=True)
+        yhat_grid = make_grid(y_pred[:5], nrow=1, normalize=True)
+        grid = torch.cat((frame_grid, yhat_grid, target_grid), -1)
+        _image = grid.detach().cpu().float().numpy()
+
+        tb_logger.add_image(f"Image/{batch_idx}_{self.current_epoch}", _image, 0)
 
     def on_validation_epoch_end(self):
         if self.hparams.use_adversarial and "val_loss" in self.trainer.callback_metrics:
@@ -322,7 +394,9 @@ class SizeNormModel(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(
-            self.model.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay
+            self.model.parameters(),
+            lr=self.hparams.lr,
+            weight_decay=self.hparams.weight_decay,
         )
         opt_dict = dict(
             optimizer=optimizer,
@@ -366,7 +440,9 @@ class SizeNormModel(pl.LightningModule):
             num_samples=len(self.training_data) // 3,
         )
         return DataLoader(
-            ConcatDataset(self.training_data, self.classifier_data) if self.hparams.use_adversarial else self.training_data,
+            ConcatDataset(self.training_data, self.classifier_data)
+            if self.hparams.use_adversarial
+            else self.training_data,
             batch_size=self.hparams.batch_size,
             shuffle=False,
             num_workers=int(os.environ.get("SLURM_CPUS_PER_TASK", default=1)),

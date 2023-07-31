@@ -8,6 +8,8 @@ from toolz import merge
 from pathlib import Path
 from dataclasses import dataclass
 
+IMG_KWARGS = dict(aspect='auto', interpolation='none')
+
 @dataclass
 class PlotConfig:
     save_path: Path = Path("/n/groups/datta/win/figures/ontogeny")
@@ -15,6 +17,12 @@ class PlotConfig:
 
 def figure(width, height, **kwargs):
     return plt.figure(figsize=(width, height), dpi=300, **kwargs)
+
+
+def legend(ax=None, **kwargs):
+    if ax is None:
+        ax = plt.gca()
+    ax.legend(bbox_to_anchor=(1, 1), loc='upper left', frameon=False, **kwargs)
 
 
 def format_plots():
