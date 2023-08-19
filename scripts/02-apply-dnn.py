@@ -5,7 +5,7 @@ from pathlib import Path
 from toolz import partial
 from tqdm.auto import tqdm
 from aging.size_norm.data import Session
-from aging.size_norm.lightning import SizeNormModel, predict
+from aging.size_norm.lightning import predict
 
 
 def predict_and_save(path, model, key):
@@ -21,8 +21,12 @@ def predict_and_save(path, model, key):
 
 
 def hasnt_key(path, key):
-    with h5py.File(path, "r") as h5f:
-        return key not in h5f
+    try:
+        with h5py.File(path, "r") as h5f:
+            return key not in h5f
+    except Exception:
+        print("Error loading", path)
+        return False
 
 
 @click.command()

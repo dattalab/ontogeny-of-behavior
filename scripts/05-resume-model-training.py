@@ -25,25 +25,34 @@ python /home/wg41/code/ontogeny/scripts/03-train-size-norm.py {config_path} {ckp
 @click.command()
 @click.argument("path", type=click.Path(exists=True))
 @click.option("--max-epochs", type=int, default=None)
+@click.option("--include-nonstarters", is_flag=True)
 @click.option("--dry-run", is_flag=True)
 @click.option("--test", is_flag=True)
-def main(path, max_epochs, dry_run, test):
+def main(path, max_epochs, dry_run, test, include_nonstarters):
     path = Path(path).expanduser().resolve()
     files = sorted(path.glob("**/*.ckpt"))
     for file in tqdm(files):
         config_path = file.with_name("config.toml")
         config = toml.load(config_path)
         if max_epochs is not None:
-            config['trainer']['max_epochs'] = max_epochs
+            config["trainer"]["max_epochs"] = max_epochs
             config_path = config_path.with_name("resume_config.toml")
-            with open(config_path, 'w') as f:
+            with open(config_path, "w") as f:
                 toml.dump(config, f)
         # get all csv files, select last one
         csv_file = sorted(file.parent.glob("**/*.csv"))[-1]
-        max_train_epoch = pd.read_csv(csv_file)['epoch'].max()
-        if (max_train_epoch + 1) >= config['trainer']['max_epochs']:
+        try:
+            max_train_epoch = pd.read_csv(csv_file)["epoch"].max()
+        except Exception:
             continue
-        new_script = script.format(folder=file.parent, config_path=str(config_path), ckpt="--checkpoint " + str(file), mem=9)
+        if (max_train_epoch + 1) >= config["trainer"]["max_epochs"]:
+            continue
+        new_script = script.format(
+            folder=file.parent,
+            config_path=str(config_path),
+            ckpt="--checkpoint " + str(file),
+            mem=9,
+        )
         if dry_run:
             print(file.parent)
             print("Dry run on file...", file)
@@ -56,16 +65,22 @@ def main(path, max_epochs, dry_run, test):
             if test:
                 print("Submitting test job...", file)
                 return
-    for file in filter(lambda f: len(list(f.parent.glob("*.ckpt"))) == 0, path.glob("**/model-scan*.out")):
-        config_path = file.with_name("config.toml")
-        # assume these died from OOM errors, add more memory
-        new_script = script.format(folder=file.parent, config_path=str(config_path), ckpt="", mem=20)
-        if not dry_run:
-            with open(file.with_name("rerun.sh"), "w") as f:
-                f.write(new_script)
-            subprocess.run(["sbatch", str(file.with_name("rerun.sh"))])
-        else:
-            print("no output for folder", file.parent)
+    if include_nonstarters:
+        for file in filter(
+            lambda f: len(list(f.parent.glob("*.ckpt"))) == 0,
+            path.glob("**/model-scan*.out"),
+        ):
+            config_path = file.with_name("config.toml")
+            # assume these died from OOM errors, add more memory
+            new_script = script.format(
+                folder=file.parent, config_path=str(config_path), ckpt="", mem=20
+            )
+            if not dry_run:
+                with open(file.with_name("rerun.sh"), "w") as f:
+                    f.write(new_script)
+                subprocess.run(["sbatch", str(file.with_name("rerun.sh"))])
+            else:
+                print("no output for folder", file.parent)
 
 
 if __name__ == "__main__":

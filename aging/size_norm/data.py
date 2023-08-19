@@ -62,8 +62,10 @@ def white_noise(img: torch.Tensor, params: AugmentationParams):
     img = img + torch.randn_like(img, device=img.device) * params.white_noise_scale
     return torch.clamp(img, 0, None)
 
+
 def normalize(img):
     return img / 110
+
 
 def unnormalize(img):
     return img * 110
@@ -190,13 +192,19 @@ def str_to_age(s):
 
 
 class AgeClassifierDataset(Dataset):
-    def __init__(self, data_path: str | Path, fake_len, seed=0, y_type='class'):
+    def __init__(self, data_path: str | Path, fake_len, seed=0, y_type='class', model=None):
+        if model is not None:
+            from aging.size_norm.lightning import predict
         rng = np.random.RandomState(seed)
         self.y_type = y_type
         data = {}
         with h5py.File(data_path, 'r') as h5f:
             for key in filter(lambda x: '22month' not in x, h5f):
-                data[key] = h5f[key][()]
+                # by supplying a model, we can apply the model to the data just once
+                if model is not None:
+                    data[key] = predict(Session(h5f[key][()]), model, batch_size=256)
+                else:
+                    data[key] = h5f[key][()]
         if y_type == 'class':
             y = np.concatenate([[key] * len(data[key]) for key in data])
             y = LabelEncoder().fit_transform(y)

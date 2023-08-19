@@ -4,7 +4,7 @@
 #SBATCH --mem=12G
 #SBATCH -p gpu_quad
 #SBATCH --gres=gpu:1
-#SBATCH -t 12:00:00
+#SBATCH -t 02:00:00
 #SBATCH --output=/n/scratch3/users/w/wg41/train-sn-model-%j.out
 
 source $HOME/.bashrc

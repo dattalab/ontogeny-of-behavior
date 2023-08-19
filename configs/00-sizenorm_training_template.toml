@@ -4,7 +4,7 @@ validation='/n/groups/datta/win/longtogeny/data/size_network/male_ontogeny_valid
 age_validation='/n/groups/datta/win/longtogeny/data/size_network/male_ontogeny_pose_balanced_validation.h5'
 
 wall_noise='/n/groups/datta/win/longtogeny/data/size_network/training_data/wall_noise.h5'
-saving='/n/groups/datta/win/longtogeny/size_norm/models/pre_final_model-2023-07-29'
+saving='/n/groups/datta/win/longtogeny/size_norm/models/pre_final_model-2023-08-02'
 # saving='/n/groups/datta/win/longtogeny/size_norm/models/continuous-gradient-size-test-with-l2-2023-07-29'
 
 [augmentation]
@@ -38,18 +38,18 @@ wall_reflection_prob = 0.1
 seed = 4
 
 [callbacks.dynamics_validation]
-log_interval = 50  # epochs
+log_interval = 500  # epochs
 max_frames = 6000
 
 [callbacks.age_validation]
-log_interval = 50  # epochs
+log_interval = 500  # epochs
 max_frames = 6000
 
 [callbacks.stopping]
 patience = 35  # epochs
 
 [trainer]
-max_epochs = 101
+max_epochs = 501
 
 [model]
 depth = 4
@@ -65,7 +65,7 @@ adversarial_prob = 0.01
 lr = 0.001
 weight_decay = 0.00001
 arch = 'ae'  # ae, unet, efficient, efficient_unet
-use_adversarial = false
+train_adversarial = false
 adversarial_age_lr = 1e-4
 jit = true
 adversarial_arch = "nonlinear"  # linear, nonlinear
@@ -90,7 +90,7 @@ epochs_to_max = 30
 [model.ae]
 double_conv = true
 separable = true
-residual = false
+residual = true
 
 [model.unet]
 double_conv = true

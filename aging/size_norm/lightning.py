@@ -1,5 +1,4 @@
 import os
-from typing import Union
 import PIL
 import torch
 import random
@@ -9,7 +8,6 @@ import torch.nn.functional as F
 from io import BytesIO
 from toolz import curry
 from pathlib import Path
-from torch import autocast
 from tqdm.auto import tqdm
 from ipywidgets import Image
 from IPython.display import display
@@ -96,7 +94,7 @@ class ImageDisplay(Callback):
             if not self.displayed_image:
                 display(self.image)
                 self.displayed_image = True
-            if pl_module.hparams.use_adversarial:
+            if pl_module.hparams.train_adversarial:
                 (frames, target), _ = batch
             else:
                 frames, target = batch
@@ -195,7 +193,7 @@ class SizeNormModel(pl.LightningModule):
         seed=0,
         device="cuda" if torch.cuda.is_available() else "cpu",
         lr_scheduler_params=dict(patience=16),
-        use_adversarial: bool = False,
+        train_adversarial: bool = False,
         adversarial_type: str = "class",  # or continuous
         adversarial_arch: str = "linear",  # or nonlinear
         adversarial_age_scaling=dict(),
@@ -210,7 +208,7 @@ class SizeNormModel(pl.LightningModule):
     ):
         super().__init__()
         self.save_hyperparameters()
-        self.automatic_optimization = not use_adversarial
+        self.automatic_optimization = not train_adversarial
         self.seed = seed
         self.rng = random.Random(seed)
         self.paths = paths
@@ -226,15 +224,16 @@ class SizeNormModel(pl.LightningModule):
             self.model = model(**model_params).to(device)
         self.augment = Augmenter(aug_params, paths.wall_noise)
 
-        if adversarial_type == "class" and use_adversarial:
-            self.classifier = LogisticRegression(9, adversarial_arch == "linear")
-            self.class_loss = self.combined_loss = F.cross_entropy
-        elif adversarial_type == "continuous" and use_adversarial:
-            self.classifier = Regression(
-                image_dim * image_dim, adversarial_arch == "linear"
-            )
-            self.class_loss = F.mse_loss
-            self.combined_loss = abs_r2_loss
+        if train_adversarial:
+            if adversarial_type == "class":
+                self.classifier = LogisticRegression(9, adversarial_arch == "linear")
+                self.class_loss = self.adversarial_loss = F.cross_entropy
+            elif adversarial_type == "continuous":
+                self.classifier = Regression(
+                    image_dim * image_dim, adversarial_arch == "linear"
+                )
+                self.class_loss = F.mse_loss
+                self.adversarial_loss = abs_r2_loss
 
     def forward(self, x, target=None):
         if (
@@ -259,7 +258,7 @@ class SizeNormModel(pl.LightningModule):
     def on_after_batch_transfer(self, batch, dataloader_idx):
         x, y = batch
         if self.trainer.training or self.trainer.validating:
-            if self.hparams.use_adversarial and self.trainer.training:
+            if self.hparams.train_adversarial and self.trainer.training:
                 (frames, target) = x
                 frames = self.augment(frames)
                 x = (frames, target)
@@ -270,7 +269,9 @@ class SizeNormModel(pl.LightningModule):
     def train_classifier(self, frames, y, opt):
         self.toggle_optimizer(opt)
         opt.zero_grad()
-        pred_class = self.classifier(torch.where(frames.detach() > 0.015, frames.detach(), 0)).squeeze()
+        pred_class = self.classifier(
+            torch.where(frames.detach() > 0.015, frames.detach(), 0)
+        ).squeeze()
         class_loss = self.class_loss(pred_class, y)
         self.log("class_loss", class_loss, prog_bar=True)
         if self.hparams.adversarial_type == "class":
@@ -311,13 +312,21 @@ class SizeNormModel(pl.LightningModule):
         self.log("train_loss", loss)
 
         class_loss = 0
-        if self.hparams.adversarial_init_epoch + (self.hparams.adversarial_age_scaling['start_epoch']) <= self.current_epoch:
+        if (
+            self.hparams.adversarial_init_epoch
+            + (self.hparams.adversarial_age_scaling["start_epoch"])
+            <= self.current_epoch
+        ):
             age_yhat = self.model(age_frames)
-            pred_class = self.classifier(torch.where(age_yhat > 0.015, age_yhat, 0)).squeeze()
+            pred_class = self.classifier(
+                torch.where(age_yhat > 0.015, age_yhat, 0)
+            ).squeeze()
             #  scaling fun epoch start is relative to adversarial training init epoch
-            scale_factor = self.scaling_fun(self.current_epoch - self.hparams.adversarial_init_epoch)
+            scale_factor = self.scaling_fun(
+                self.current_epoch - self.hparams.adversarial_init_epoch
+            )
             self.log("scale_factor", scale_factor)
-            class_loss = self.combined_loss(pred_class, age_class) * scale_factor
+            class_loss = self.adversarial_loss(pred_class, age_class) * scale_factor
 
         l2_loss = torch.cat([x.view(-1) for x in self.model.parameters()])
         self.log("90th_percentile_weight_sn", torch.quantile(l2_loss, 0.9))
@@ -342,7 +351,11 @@ class SizeNormModel(pl.LightningModule):
 
         # train the classifier
         if self.hparams.adversarial_init_epoch <= self.current_epoch:
-            if self.hparams.adversarial_init_epoch + (self.hparams.adversarial_age_scaling['start_epoch']) <= self.current_epoch:
+            if (
+                self.hparams.adversarial_init_epoch
+                + (self.hparams.adversarial_age_scaling["start_epoch"])
+                <= self.current_epoch
+            ):
                 self.train_classifier(age_yhat, age_class, class_opt)
             else:
                 self.train_classifier(self.model(age_frames), age_class, class_opt)
@@ -350,7 +363,7 @@ class SizeNormModel(pl.LightningModule):
         return dict(loss=loss, class_loss=class_loss, combined_loss=loss + class_loss)
 
     def training_step(self, batch, batch_idx):
-        if self.hparams.use_adversarial:
+        if self.hparams.train_adversarial:
             return self.train_with_classifier(batch)
 
         frames, target = batch
@@ -389,7 +402,7 @@ class SizeNormModel(pl.LightningModule):
         tb_logger.add_image(f"Image/{batch_idx}_{self.current_epoch}", _image, 0)
 
     def on_validation_epoch_end(self):
-        if self.hparams.use_adversarial and "val_loss" in self.trainer.callback_metrics:
+        if self.hparams.train_adversarial and "val_loss" in self.trainer.callback_metrics:
             self.lr_schedulers().step(self.trainer.callback_metrics["val_loss"])
 
     def configure_optimizers(self):
@@ -408,7 +421,7 @@ class SizeNormModel(pl.LightningModule):
                 monitor="val_loss",
             ),
         )
-        if self.hparams.use_adversarial:
+        if self.hparams.train_adversarial:
             optimizer2 = torch.optim.AdamW(
                 self.classifier.parameters(),
                 lr=self.hparams.adversarial_age_lr,
@@ -424,7 +437,7 @@ class SizeNormModel(pl.LightningModule):
             dataset, [0.96, 0.04], generator=generator
         )
         # set up optional age classifier
-        if self.hparams.use_adversarial:
+        if self.hparams.train_adversarial:
             self.classifier_data = AgeClassifierDataset(
                 self.paths.age_validation,
                 len(self.training_data),
@@ -441,7 +454,7 @@ class SizeNormModel(pl.LightningModule):
         )
         return DataLoader(
             ConcatDataset(self.training_data, self.classifier_data)
-            if self.hparams.use_adversarial
+            if self.hparams.train_adversarial
             else self.training_data,
             batch_size=self.hparams.batch_size,
             shuffle=False,
@@ -459,7 +472,7 @@ class SizeNormModel(pl.LightningModule):
 
 def predict(
     data: Session,
-    model: Union[str, Path, torch.nn.Module],
+    model: str | Path | torch.nn.Module,
     batch_size=512,
     **tqdm_kwargs,
 ):
@@ -480,3 +493,133 @@ def predict(
     del data
 
     return output
+
+
+class AgingModel(pl.LightningModule):
+    def __init__(
+        self, paths: TrainingPaths, pred_type, sn_model, batch_size=64, lr=1e-3, seed=0
+    ):
+        super().__init__()
+        self.lr = lr
+        self.seed = seed
+        self.paths = paths
+        self.sn_model = sn_model
+        self.pred_type = pred_type
+        self.batch_size = batch_size
+
+        if pred_type == "class":
+            self.classifier = LogisticRegression(9, linear=False)
+            self.loss_fun = F.cross_entropy
+        elif pred_type == "continuous":
+            self.classifier = Regression(80 * 80, linear=False)
+            self.loss_fun = F.mse_loss
+
+    def forward(self, x):
+        return self.classifier(x)
+
+    def training_step(self, batch, batch_idx):
+        x, y_true = batch
+        y_pred = self(x)
+        loss = self.loss_fun(y_pred, y_true)
+        self.log("train_loss", loss)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        x, y_true = batch
+        y_pred = self(x)
+        loss = self.loss_fun(y_pred, y_true)
+        self.log("val_loss", loss, prog_bar=True)
+        return loss
+
+    def configure_optimizers(self):
+        return torch.optim.AdamW(self.classifier.parameters(), lr=self.lr, weight_decay=1e-5)
+
+    def setup(self, stage=None):
+        dataset = AgeClassifierDataset(
+            self.paths.age_validation,
+            None,
+            seed=self.seed,
+            y_type=self.pred_type,
+            model=self.sn_model,
+        )
+        generator = torch.Generator().manual_seed(self.seed)
+        self.training_data, self.val_data = torch.utils.data.random_split(
+            dataset, [0.8, 0.2], generator=generator
+        )
+
+    def train_dataloader(self):
+        return DataLoader(
+            self.training_data,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=int(os.environ.get("SLURM_CPUS_PER_TASK", default=1)),
+        )
+
+    def val_dataloader(self):
+        return DataLoader(
+            self.val_data,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=int(os.environ.get("SLURM_CPUS_PER_TASK", default=1)),
+        )
+
+
+class SizeNormModelStep2(pl.LightningModule):
+    def __init__(self, paths: TrainingPaths, sn_model, age_model, lr=1e-3, seed=0):
+        super().__init__()
+        self.lr = lr
+        self.seed = seed
+        self.sn_model = sn_model
+        self.age_model = age_model
+        self.paths = paths
+        # turn off gradient accumulation for age model
+        for p in self.age_model.parameters():
+            p.requires_grad = False
+
+    def forward(self, x):
+        return self.sn_model(x)
+
+    def training_step(self, batch, batch_idx):
+        x, y_true = batch
+        y_pred = self(x)
+        loss = F.mse_loss(y_pred, y_true)
+        self.log("train_loss", loss)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        x, y_true = batch
+        y_pred = self(x)
+        loss = F.mse_loss(y_pred, y_true)
+        self.log("val_loss", loss, prog_bar=True)
+        return loss
+
+    def configure_optimizers(self):
+        return torch.optim.AdamW(self.sn_model.parameters(), lr=self.lr, weight_decay=1e-5)
+
+    def setup(self, stage=None):
+        dataset = SizeNormDataset(
+            self.paths.size_norm_validation,
+            None,
+            seed=self.seed,
+            model=self.age_model,
+        )
+        generator = torch.Generator().manual_seed(self.seed)
+        self.training_data, self.val_data = torch.utils.data.random_split(
+            dataset, [0.8, 0.2], generator=generator
+        )
+
+    def train_dataloader(self):
+        return DataLoader(
+            self.training_data,
+            batch_size=64,
+            shuffle=True,
+            num_workers=int(os.environ.get("SLURM_CPUS_PER_TASK", default=1)),
+        )
+
+    def val_dataloader(self):
+        return DataLoader(
+            self.val_data,
+            batch_size=64,
+            shuffle=False,
+            num_workers=int(os.environ.get("SLURM_CPUS_PER_TASK", default=1)),
+        )

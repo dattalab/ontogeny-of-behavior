@@ -28,6 +28,7 @@ def _predict(model, data: Dataset, batch_size=512):
                 unnormalize(model(x_batch.to(model.device))).cpu().numpy().squeeze()
             )
     yhat = np.concatenate(yhat)
+    yhat = np.where(yhat < 2, 0, yhat)  # remove close-to-zero noise
     out = valmap(np.concatenate, out)
     return yhat, out
 

@@ -32,7 +32,7 @@ def format_plots():
     all_fig_dct = {
         "pdf.fonttype": 42,
         "font.family": "sans-serif",
-        # "font.sans-serif": "Arial",
+        "font.sans-serif": "Arial",
         "mathtext.fontset": "custom",
         "mathtext.rm": "Liberation Sans",
         "mathtext.it": "Liberation Sans:italic",
