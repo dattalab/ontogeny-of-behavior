@@ -199,7 +199,6 @@ class SizeNormModel(pl.LightningModule):
         adversarial_age_scaling=dict(),
         adversarial_init_epoch: int = 0,
         adversarial_age_lr: float = 1e-3,
-        jit=True,
         max_grad: float = 100,
         use_l2_regularization_class: bool = False,
         l2_regularization_class_alpha: float = 1e-6,
@@ -215,13 +214,7 @@ class SizeNormModel(pl.LightningModule):
         self.lr_scheduler_params = lr_scheduler_params
         self.scaling_fun = exponential_scaling(**adversarial_age_scaling)
 
-        if jit:
-            self.model = torch.jit.trace(
-                model(**model_params).to(device),
-                torch.zeros(batch_size, 1, image_dim, image_dim, device=device),
-            )
-        else:
-            self.model = model(**model_params).to(device)
+        self.model = model(**model_params).to(device)
         self.augment = Augmenter(aug_params, paths.wall_noise)
 
         if train_adversarial:

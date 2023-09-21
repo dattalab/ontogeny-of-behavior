@@ -1,5 +1,6 @@
 import pandas as pd
 
+
 def compute_onsets(df: pd.DataFrame):
     mask = (df['syllables'].diff() != 0).fillna(False).astype(bool)
     return mask
@@ -24,4 +25,3 @@ def relabel_by_usage(df: pd.DataFrame, return_map=True):
     if return_map:
         return df, usage_map
     return df
-    

@@ -38,8 +38,8 @@ def insert_nans(timestamps, data, fps=30):
     return filled_data, data_idx, filled_timestamps
 
 
-def im_moment_features(frame):
-    frame_mask = frame > 10
+def im_moment_features(frame, height_thresh=10):
+    frame_mask = frame > height_thresh
     cnts, _ = cv2.findContours(frame_mask.astype('uint8'), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     tmp = np.array([cv2.contourArea(x) for x in cnts])
     if tmp.size == 0:
@@ -85,7 +85,7 @@ def pxs_to_mm(coords, resolution=(512, 424), field_of_view=(70.6, 60), true_dept
     return new_coords
 
 
-def compute_scalars(frames, centroid=None, true_depth=None, is_recon=True):
+def compute_scalars(frames, centroid=None, true_depth=None, is_recon=True, height_thresh=10):
     convert_mm = not (centroid is None or true_depth is None)
     if convert_mm:
         centroid_mm = pxs_to_mm(centroid, true_depth=true_depth)
@@ -98,7 +98,7 @@ def compute_scalars(frames, centroid=None, true_depth=None, is_recon=True):
     area = []
     for i, frame in enumerate(frames):
         # compute ellipse
-        feats = im_moment_features(frame)
+        feats = im_moment_features(frame, height_thresh)
         if feats is None:
             width.append(np.nan)
             length.append(np.nan)
@@ -113,8 +113,8 @@ def compute_scalars(frames, centroid=None, true_depth=None, is_recon=True):
 
             width.append(w)
             length.append(l)
-            height.append(np.mean(frame[(frame > 10) & (frame < 110)]))
-        _area = np.sum((frame > 10) & (frame < 110))
+            height.append(np.mean(frame[(frame > height_thresh) & (frame < 110)]))
+        _area = np.sum((frame > height_thresh) & (frame < 110), dtype='float32')
         if convert_mm:
             _area *= px_to_mm[i].mean()
         area.append(_area)

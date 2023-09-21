@@ -9,14 +9,18 @@ from pathlib import Path
 from dataclasses import dataclass
 
 IMG_KWARGS = dict(aspect='auto', interpolation='none')
+ontogeny_age_colors = ['#DADAEB', '#6A51A3']
+ONTOGENY_AGE_CMAP = sns.blend_palette(ontogeny_age_colors, as_cmap=True)
+
 
 @dataclass
 class PlotConfig:
     save_path: Path = Path("/n/groups/datta/win/figures/ontogeny")
+    dana_save_path: Path = Path("/n/groups/datta/Dana/Ontogeny/figs")
 
 
-def figure(width, height, **kwargs):
-    return plt.figure(figsize=(width, height), dpi=300, **kwargs)
+def figure(width, height, dpi=300, **kwargs):
+    return plt.figure(figsize=(width, height), dpi=dpi, **kwargs)
 
 
 def legend(ax=None, **kwargs):
@@ -31,13 +35,15 @@ def format_plots():
     '''
     all_fig_dct = {
         "pdf.fonttype": 42,
+        "figure.figsize": (3, 3),
         "font.family": "sans-serif",
-        "font.sans-serif": "Arial",
+        "font.sans-serif": "Helvetica",
         "mathtext.fontset": "custom",
         "mathtext.rm": "Liberation Sans",
         "mathtext.it": "Liberation Sans:italic",
         "mathtext.bf": "Liberation Sans:bold",
         'savefig.facecolor': 'white',
+        'savefig.transparent': True,
         'figure.facecolor': 'white',
         'axes.edgecolor': 'black',
         "axes.labelcolor": "black",
@@ -46,28 +52,37 @@ def format_plots():
         'ytick.color': 'black',
         'svg.fonttype': 'none',
         'lines.linewidth': 1,
+        'axes.linewidth': 0.5,
     }
 
     # all in points
     font_dct = {
-        "axes.labelpad": 3.5,
-        "font.size": 7,
-        "axes.titlesize": 7,
-        "axes.labelsize": 7,
-        "xtick.labelsize": 5,
-        "ytick.labelsize": 5,
-        "legend.fontsize": 5,
-        "xtick.major.size": 3.6,
-        "ytick.major.size": 3.6,
-        "xtick.major.width": 1,
-        "ytick.major.width": 1,
-        "xtick.major.pad": 1.5,
-        "ytick.major.pad": 1.5
+        "axes.labelpad": 2.5,
+        "font.size": 6,
+        "axes.titlesize": 6,
+        "axes.labelsize": 6,
+        "xtick.labelsize": 6,
+        "ytick.labelsize": 6,
+        "legend.fontsize": 6,
+        "xtick.major.size": 1.75,
+        "ytick.major.size": 1.75,
+        "xtick.minor.size": 1.75,
+        "ytick.minor.size": 1.75,
+        "xtick.major.width": 0.5,
+        "ytick.major.width": 0.5,
+        "xtick.minor.width": 0.5,
+        "ytick.minor.width": 0.5,
+        "xtick.major.pad": 1,
+        "ytick.major.pad": 1,
+        "xtick.minor.pad": 1,
+        "ytick.minor.pad": 1,
     }
 
     plot_config = merge(all_fig_dct, font_dct)
 
     plt.style.use('default')
+    for k, v in plot_config.items():
+        plt.rcParams[k] = v
     sns.set_style('white', merge(sns.axes_style('ticks'), plot_config))
     sns.set_context('paper', rc=plot_config)
 
@@ -77,11 +92,11 @@ def format_plots():
     plt.rcParams['figure.dpi'] = 200
 
 
-def save_factory(folder, backgrounds=('white',), tight_layout=True):
+def save_factory(folder, backgrounds=('white',), tight_layout=True, dpi=300):
     folder = Path(folder).absolute().expanduser()
     folder.mkdir(parents=True, exist_ok=True)
 
-    def save(fig, name, savefig=True, tight_layout=tight_layout):
+    def save(fig, name, savefig=True, tight_layout=tight_layout, dpi=dpi):
         if tight_layout:
             fig.tight_layout()
         if savefig:
@@ -90,8 +105,73 @@ def save_factory(folder, backgrounds=('white',), tight_layout=True):
                 for ax in fig.axes:
                     ax.set_facecolor(bg)
                 fig.savefig(folder / (name + ext + '.png'),
-                            dpi=150, facecolor=bg)
-                fig.savefig(folder / (name + ext + '.pdf'), facecolor=bg)
+                            dpi=dpi, facecolor=bg)
+                fig.savefig(folder / (name + ext + '.pdf'), facecolor=bg, dpi=dpi)
         return fig
 
     return save
+
+
+def format_pizza_plots():
+    '''
+    Defines a series of formatting options for plots and applies them globally.
+    '''
+    all_fig_dct = {
+        "pdf.fonttype": 42,
+        "figure.figsize": (3, 3),
+        "font.family": "sans-serif",
+        "font.sans-serif": "Helvetica",
+        "mathtext.fontset": "custom",
+        "mathtext.rm": "Liberation Sans",
+        "mathtext.it": "Liberation Sans:italic",
+        "mathtext.bf": "Liberation Sans:bold",
+        'savefig.facecolor': 'black',
+        # 'savefig.transparent': True,
+        'figure.facecolor': 'black',
+        'axes.facecolor': 'black',
+        'axes.edgecolor': 'white',
+        "axes.labelcolor": "white",
+        "text.color": "white",
+        'xtick.color': 'white',
+        'ytick.color': 'white',
+        'svg.fonttype': 'none',
+        'lines.linewidth': 1,
+        'axes.linewidth': 1,
+    }
+
+    # all in points
+    font_dct = {
+        "axes.labelpad": 2.5,
+        "font.size": 6,
+        "axes.titlesize": 8,
+        "axes.labelsize": 6,
+        "xtick.labelsize": 6,
+        "ytick.labelsize": 6,
+        "legend.fontsize": 6,
+        "legend.title_fontsize": 6,
+        "xtick.major.size": 1.75,
+        "ytick.major.size": 1.75,
+        "xtick.minor.size": 1.75,
+        "ytick.minor.size": 1.75,
+        "xtick.major.width": 0.5,
+        "ytick.major.width": 0.5,
+        "xtick.minor.width": 0.5,
+        "ytick.minor.width": 0.5,
+        "xtick.major.pad": 1,
+        "ytick.major.pad": 1,
+        "xtick.minor.pad": 1,
+        "ytick.minor.pad": 1,
+    }
+
+    plot_config = merge(all_fig_dct, font_dct)
+
+    plt.style.use('default')
+    for k, v in plot_config.items():
+        plt.rcParams[k] = v
+    sns.set_style('dark', merge(sns.axes_style('ticks'), plot_config))
+    sns.set_context('paper', rc=plot_config)
+
+    if platform.system() != 'Darwin':
+        plt.rcParams['ps.usedistiller'] = 'xpdf'
+    plt.rcParams['pdf.fonttype'] = 42
+    plt.rcParams['figure.dpi'] = 200

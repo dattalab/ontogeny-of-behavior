@@ -26,6 +26,7 @@ setup(
         "kornia",
         "lightning",
         "click",
+        "multiprocess",
         #"git+https://github.com/wingillis/jax-moseq.git@robust_arhmm"
     ]
 )
