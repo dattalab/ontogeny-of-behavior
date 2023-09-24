@@ -32,18 +32,20 @@ def get_experiment(path: Path):
     str_path = str(path)
     if "min" in str_path and "longtogeny" in str_path:
         exp = f"longtogeny_v2_{path.parents[2].name.lower()}"
-    elif "longtogeny" in str(path):
+    elif "dlight" in str_path:
+        return "dlight"
+    elif "longtogeny" in str_path:
         sex = path.parents[3].name.lower()
         if sex not in ("males", "females"):
             sex = path.parents[2].name.lower()
             if sex not in ("males", "females"):
                 raise ValueError("bleh")
         exp = f"longtogeny_{sex}"
-    elif "ontogeny" in str(path).lower() and "community" not in str(path):
+    elif "ontogeny" in str_path.lower() and "community" not in str_path:
         exp = path.parents[3].name.lower()
         if exp == "raw_data":
             exp = path.parents[2].name.lower()
-    elif "wheel" in str(path).lower():
+    elif "wheel" in str_path.lower():
         exp = "wheel"
     else:
         exp = path.parents[2].name

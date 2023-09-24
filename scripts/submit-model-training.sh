@@ -1,10 +1,10 @@
 #!/bin/env bash
 #SBATCH -c 1
 #SBATCH -n 1
-#SBATCH --mem=12G
+#SBATCH --mem=14G
 #SBATCH -p gpu_quad
 #SBATCH --gres=gpu:1
-#SBATCH -t 02:00:00
+#SBATCH -t 1-00:00:00
 #SBATCH --output=/n/scratch3/users/w/wg41/train-sn-model-%j.out
 
 source $HOME/.bashrc

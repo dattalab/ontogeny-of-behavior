@@ -71,7 +71,6 @@ def main(config_path, checkpoint, progress):
         save_top_k=1,
         mode="min",
     )
-    print("patience", get_in(["callbacks", "stopping", "patience"], config, 13))
     early_stopping_cb = EarlyStopping(
         monitor="val_loss",
         patience=get_in(["callbacks", "stopping", "patience"], config, 13),
@@ -118,20 +117,17 @@ def main(config_path, checkpoint, progress):
     if not trainer.interrupted:
         model = SizeNormModel.load_from_checkpoint(ckpt_cb.best_model_path)
         # save jit version of model
-        if model.hparams.jit:
-            torch.jit.save(model.model, save_folder / "model.pt")
-        else:
-            mdl = torch.jit.trace(
-                model.model,
-                torch.zeros(
-                    model.hparams.batch_size,
-                    1,
-                    model.hparams.image_dim,
-                    model.hparams.image_dim,
-                    device=model.device,
-                ),
-            )
-            torch.jit.save(mdl, save_folder / "model.pt")
+        mdl = torch.jit.trace(
+            model.model.eval(),
+            torch.zeros(
+                model.hparams.batch_size,
+                1,
+                model.hparams.image_dim,
+                model.hparams.image_dim,
+                device=model.device,
+            ),
+        )
+        torch.jit.save(mdl, save_folder / "model.pt")
         print("Saved model to folder", str(save_folder))
 
 
