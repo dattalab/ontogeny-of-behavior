@@ -1,3 +1,4 @@
+import re
 import os
 import h5py
 import click
@@ -24,6 +25,7 @@ from aging.organization.dataframes import create_uuid_map, extract_scalars
             "ontogeny_males",
             "ontogeny_females",
             "wheel",
+            "dlight",
         ]
     ),
 )
@@ -33,6 +35,12 @@ from aging.organization.dataframes import create_uuid_map, extract_scalars
 @click.option("--rescaled-key", type=str, default="rescaled_frames")
 def main(data_folder, experiment, data_version, df_version, recon_key, rescaled_key):
     n_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
+    parser = re.compile(r"session_(\d+)")
+
+    def parse_date(path):
+        return datetime.strptime(
+            parser.search(path.parents[1].name).group(1), "%Y%m%d%H%M%S"
+        )
 
     def mp_extract(args):
         uuid, path = args
@@ -49,15 +57,15 @@ def main(data_folder, experiment, data_version, df_version, recon_key, rescaled_
     pool = Pool(n_cpus)
     with h5py.File(syllable_path, "r") as h5f:
         # for uuid, path, extraction_data in map(mp_extract, tqdm(uuid_map.items(), total=len(uuid_map))):
-        for uuid, path, extraction_data in tqdm(pool.imap_unordered(mp_extract, uuid_map.items()), total=len(uuid_map)):
+        for uuid, path, extraction_data in tqdm(
+            pool.imap_unordered(mp_extract, uuid_map.items()), total=len(uuid_map)
+        ):
             if extraction_data is None:
                 extraction_data = dict(session_name="", subject_name="")
             age = np.nan
             if "ontogeny" in experiment:
                 age = path.parents[2].name.split("_")[0]
-            date = datetime.strptime(
-                path.parents[1].name.split("_")[-1], "%Y%m%d%H%M%S"
-            )
+            date = parse_date(path)
             try:
                 _df = pd.DataFrame(
                     dict(
@@ -70,6 +78,7 @@ def main(data_folder, experiment, data_version, df_version, recon_key, rescaled_
                         **extraction_data,
                     )
                 )
+                _df['onsets'] = _df['syllables'].diff() != 0
                 float_cols = _df.select_dtypes(include=["float64", "float32"]).columns
                 _df[float_cols] = _df[float_cols].astype("float32[pyarrow]")
                 _df = _df.astype(
@@ -84,8 +93,10 @@ def main(data_folder, experiment, data_version, df_version, recon_key, rescaled_
                 )
                 df.append(_df)
                 if len(df) % 40 == 0:
-                    pd.concat(df, ignore_index=True).to_parquet(
-                        data_folder / f"{experiment}_syllable_df_v{df_version:02d}.parquet"
+                    df = [pd.concat(df, ignore_index=True)]
+                    df[0].to_parquet(
+                        data_folder
+                        / f"{experiment}_syllable_df_v{df_version:02d}.parquet"
                     )
             except Exception as e:
                 print("Error on file:", path)
@@ -95,7 +106,8 @@ def main(data_folder, experiment, data_version, df_version, recon_key, rescaled_
     pd.concat(df, ignore_index=True).to_parquet(
         data_folder / f"{experiment}_syllable_df_v{df_version:02d}.parquet"
     )
-    print('Finished creating dataframe')
+    print("Finished creating dataframe")
+    pool.close()
 
 
 if __name__ == "__main__":

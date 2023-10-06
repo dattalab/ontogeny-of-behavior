@@ -40,7 +40,9 @@ def preprocess_df(usage_df, filter_fun=None, xform_fun=None):
     return usage_df
 
 
-def diffuse_pseudotime(seed_vec: np.ndarray, smoothing_mtx: np.ndarray, diffusion_iter: int = 5_000) -> tuple[np.ndarray, np.ndarray]:
+def diffuse_pseudotime(
+    seed_vec: np.ndarray, smoothing_mtx: np.ndarray, diffusion_iter: int = 5_000
+) -> tuple[np.ndarray, np.ndarray]:
     out = seed_vec.copy()
     for _ in tqdm(range(diffusion_iter)):
         out = minmax_norm(smoothing_mtx @ out)
@@ -50,10 +52,12 @@ def diffuse_pseudotime(seed_vec: np.ndarray, smoothing_mtx: np.ndarray, diffusio
     return ranks, out
 
 
-def make_smoothing_mtx(neighhors):
+def make_smoothing_mtx(neighbors, k_neigh, beta):
     smoothing_mtx = np.zeros((len(neighbors),) * 2)
     smoothing_mtx[neighbors[:, [0]], neighbors] = 1 / k_neigh
-    smoothing_mtx = np.eye(len(neighbors)) * beta * smoothing_mtx + (1 - beta) * smoothing_mtx
+    smoothing_mtx = (
+        np.eye(len(neighbors)) * beta * smoothing_mtx + (1 - beta) * smoothing_mtx
+    )
     return smoothing_mtx
 
 
@@ -83,7 +87,7 @@ def compute_pseudotime(
 
     nn, _ = compute_nearest_neighbors(usage_df, metric, k_neigh)
 
-    smoothing_mtx = make_smoothing_mtx(nn)
+    smoothing_mtx = make_smoothing_mtx(nn, k_neigh, beta)
 
     seed_idx = np.where(
         usage_df.index.get_level_values("age")
@@ -142,4 +146,4 @@ def pseudotime_springplot(
         cmap=cmap, norm=plt.Normalize(vmin=ages.min(), vmax=ages.max())
     )
     fig.colorbar(sm, ax=ax, label="Age")
-    return graph, pos, colors
+    return graph, pos, colors, fig

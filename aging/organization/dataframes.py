@@ -1,10 +1,11 @@
 import h5py
+import numba
 import numpy as np
 from pathlib import Path
 from copy import deepcopy
 from tqdm.auto import tqdm
 from aging.behavior.scalars import compute_scalars
-from toolz import concat, keyfilter, valmap, keymap
+from toolz import concat, keyfilter, valmap
 
 
 def create_uuid_map(folders, syllable_path, experiment) -> dict:
@@ -53,8 +54,9 @@ def get_experiment(path: Path):
 
 
 def insert_nans(timestamps, data, fps=30):
+    print("inserting nans - old")
     df_timestamps = np.diff(np.insert(timestamps, 0, timestamps[0] - 1.0 / fps))
-    missing_frames = np.floor(df_timestamps / (1.0 / fps))
+    missing_frames = np.round(df_timestamps / np.median(df_timestamps))
 
     fill_idx = np.where(missing_frames > 1)[0]
     data_idx = np.arange(len(timestamps)).astype('float64')
@@ -86,42 +88,76 @@ def insert_nans(timestamps, data, fps=30):
     return filled_data, data_idx, filled_timestamps
 
 
+@numba.jit(nopython=True)
+def insert_nans_numba(timestamps, data, fps=30):
+    timestamps = list(timestamps)
+    data = list(data)
+    # get the difference between timestamps, accounting for np.diff's length reduction
+    df_timestamps = np.diff(np.array([timestamps[0] - 1 / fps] + timestamps))
+    missing = np.round(df_timestamps / np.median(df_timestamps))
+    fill_idx = np.where(missing > 1)[0]
+
+    filled_data = data.copy()
+    filled_timestamps = timestamps.copy()
+
+    for i in fill_idx[::-1]:
+        n = int(missing[i] - 1)
+
+        time_start = (timestamps[i-1] + np.cumsum(np.full(n, 1 / fps)))[::-1]
+
+        for j in range(n):
+            filled_data.insert(i, np.nan)
+            filled_timestamps.insert(i, time_start[j])
+
+    return np.array(filled_data), np.array(filled_timestamps)
+
+
+def determine_timestamp_scale(timestamps, fps=30):
+    RT_MOSEQ_SCALE = 1.25e-4  # for rt-moseq setup
+    OG_SCALE = 1e-3  # for original setup
+
+    target_sample_rate = 1 / fps
+
+    sample_rate = np.median(np.diff(timestamps))
+    scale_map = {
+        RT_MOSEQ_SCALE: np.abs(sample_rate * RT_MOSEQ_SCALE - target_sample_rate),
+        OG_SCALE: np.abs(sample_rate * OG_SCALE - target_sample_rate),
+    }
+    return min(scale_map, key=scale_map.get)
+
+
 def extract_scalars(path: Path, recon_key, rescaled_key):
     try:
         with h5py.File(path, "r") as f:
             session_name = f["metadata/acquisition/SessionName"][()].decode()
             subject_name = f["metadata/acquisition/SubjectName"][()].decode()
+            true_depth = f["metadata/extraction/true_depth"][()]
+
             keep_scalars = list(filter(lambda k: "mm" in k or "px" in k, f["scalars"])) + [
                 "angle",
                 "velocity_theta",
             ]
 
-            ts = f["timestamps"][()] / 1000
-            scalars = dict((k, f["scalars"][k][()]) for k in keep_scalars)
-            filled_scalars = valmap(lambda v: insert_nans(ts, v)[0], scalars)
-            filled_ts = insert_nans(ts, ts)[2]
+            ts = f["timestamps"][()]
+            scale = determine_timestamp_scale(ts)
+            ts *= scale
+
+            filled_ts = insert_nans_numba(ts, ts)[-1]
+
+            scalars = dict((k, f["scalars"][k][()].astype('float64')) for k in keep_scalars)
+            filled_scalars = valmap(lambda v: insert_nans_numba(ts, v)[0], scalars)
 
             frames = f[recon_key][()]
-            # centroid = np.array(
-            #     [f["scalars/centroid_x_px"][()], f["scalars/centroid_y_px"][()]]
-            # ).T
-            true_depth = f["metadata/extraction/true_depth"][()]
-            # recon_scalars = compute_scalars(frames, centroid, true_depth)
             recon_scalars = compute_scalars(frames, height_thresh=15)
-            recon_scalars = valmap(lambda v: insert_nans(ts, v)[0], recon_scalars)
-            # also add rescaled scalars
-            frames = f[rescaled_key][()]
-            rescaled_scalars = compute_scalars(frames, is_recon=False, height_thresh=15)
-            rescaled_scalars = keymap(lambda k: f"rescaled_{k}", rescaled_scalars)
-            rescaled_scalars = valmap(lambda v: insert_nans(ts, v)[0], rescaled_scalars)
+            recon_scalars = valmap(lambda v: insert_nans_numba(ts, v.astype('float64'))[0], recon_scalars)
         return dict(
             true_depth=true_depth,
             session_name=session_name,
             subject_name=subject_name,
             timestamps=filled_ts - filled_ts[0],
+            raw_timestamps=filled_ts,
             **filled_scalars,
             **recon_scalars,
-            **rescaled_scalars,
         )
     except (OSError, KeyError) as e:
         print("Error with", str(path))

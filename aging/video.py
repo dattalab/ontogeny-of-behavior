@@ -6,8 +6,9 @@ from matplotlib.pyplot import get_cmap
 
 
 def write_movie(fname: str, data: np.ndarray, cmap="cubehelix", fps=30, color_resolution=256):
-    if not fname.endswith(".mp4"):
-        fname += ".mp4"
+    fname: Path = Path(fname).with_suffix(".mp4")
+    if not fname.parent.exists():
+        fname.parent.mkdir(parents=True)
 
     data_min = np.nanmin(data)
     scale = np.ptp(data)
@@ -19,7 +20,7 @@ def write_movie(fname: str, data: np.ndarray, cmap="cubehelix", fps=30, color_re
         mode="I",
         format="FFMPEG",
         codec="libx264",
-        output_params=["-crf", "29", "-preset", "slower"],
+        output_params=["-crf", "29", "-preset", "slower", "-pix_fmt", "yuv420p"],
     )
 
     for i, frame in enumerate(map(np.nan_to_num, data)):
@@ -40,7 +41,8 @@ def write_movie_av(fname: str, data: np.ndarray, cmap="cubehelix", fps=30, color
     cmap = get_cmap(cmap, color_resolution)
 
     with iio.imopen(fname, 'w', plugin='pyav') as file:
-        file.init_video_stream('libx264', fps=fps)
+        # set pix_fmt
+        file.init_video_stream('libx264', fps=fps, pixel_format='yuv420p')
 
         for i, frame in enumerate(map(np.nan_to_num, data)):
             img = np.uint8(cmap((frame - data_min) / scale) * 255)

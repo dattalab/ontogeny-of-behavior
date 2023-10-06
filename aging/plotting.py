@@ -12,6 +12,8 @@ IMG_KWARGS = dict(aspect='auto', interpolation='none')
 ontogeny_age_colors = ['#DADAEB', '#6A51A3']
 ONTOGENY_AGE_CMAP = sns.blend_palette(ontogeny_age_colors, as_cmap=True)
 
+_colors = ['#ccece6','#99d8c9','#66c2a4','#41ae76','#238b45','#006d2c']
+LONGTOGENY_AGE_CMAP = sns.blend_palette(_colors, as_cmap=True)
 
 @dataclass
 class PlotConfig:
