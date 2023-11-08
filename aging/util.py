@@ -56,6 +56,12 @@ def count_trigram(sequence, threshold_counts=0):
 def bigram_normalize(tm):
     return tm / tm.sum()
 
+
 def row_normalize(tm):
     '''Computes outgoing transition probabilities.'''
     return tm / tm.sum(axis=1, keepdims=True)
+
+
+def correct_for_camera_height(array, camera_height, target_height=670):
+    '''Corrects for camera height.'''
+    return array * (camera_height / target_height)

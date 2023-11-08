@@ -117,6 +117,9 @@ class JaxRegressor(RegressorMixin, BaseEstimator):
         X_ = jnp.array(X, dtype=jnp.float32)
         y_ = jnp.array(y, dtype=jnp.float32)
 
+        if hasattr(self, "is_fitted_") and self.is_fitted_:
+            self.initialize(self.coef_shapes)
+
         if "l1" in signature(self.loss_fun).parameters:
             loss_fun = partial(self.loss_fun, l1=self.l1)
         else:
@@ -139,6 +142,12 @@ class JaxRegressor(RegressorMixin, BaseEstimator):
         check_is_fitted(self)
         X = check_array(X)
         return self.model(X, **self.coef_)
+
+    def gradient(self, X):
+        def fn(x):
+            return self.model(x, **self.coef_).squeeze()
+        grad = jax.grad(fn)
+        return jnp.array([grad(x) for x in X.squeeze()])
 
 
 def exponential(X, a, b, c, offset):
