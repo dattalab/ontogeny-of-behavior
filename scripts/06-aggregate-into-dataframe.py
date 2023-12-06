@@ -1,4 +1,3 @@
-import re
 import os
 import h5py
 import click
@@ -6,10 +5,15 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from tqdm.auto import tqdm
-from datetime import datetime
 from multiprocess import Pool
 from aging.organization.paths import FOLDERS
-from aging.organization.dataframes import create_uuid_map, extract_scalars
+from aging.organization.dataframes import (
+    create_uuid_map,
+    extract_scalars,
+    parse_date,
+    get_age,
+    jax_parse_date,
+)
 
 
 @click.command()
@@ -26,6 +30,7 @@ from aging.organization.dataframes import create_uuid_map, extract_scalars
             "ontogeny_females",
             "wheel",
             "dlight",
+            "jax_longtogeny",
         ]
     ),
 )
@@ -35,12 +40,6 @@ from aging.organization.dataframes import create_uuid_map, extract_scalars
 @click.option("--rescaled-key", type=str, default="rescaled_frames")
 def main(data_folder, experiment, data_version, df_version, recon_key, rescaled_key):
     n_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
-    parser = re.compile(r"session_(\d+)")
-
-    def parse_date(path):
-        return datetime.strptime(
-            parser.search(path.parents[1].name).group(1), "%Y%m%d%H%M%S"
-        )
 
     def mp_extract(args):
         uuid, path = args
@@ -62,10 +61,11 @@ def main(data_folder, experiment, data_version, df_version, recon_key, rescaled_
         ):
             if extraction_data is None:
                 extraction_data = dict(session_name="", subject_name="")
-            age = np.nan
-            if "ontogeny" in experiment:
-                age = path.parents[2].name.split("_")[0]
-            date = parse_date(path)
+            if experiment == "jax_longtogeny":
+                date = jax_parse_date(path)
+            else:
+                date = parse_date(path)
+            age = get_age(path)
             try:
                 _df = pd.DataFrame(
                     dict(
@@ -78,7 +78,7 @@ def main(data_folder, experiment, data_version, df_version, recon_key, rescaled_
                         **extraction_data,
                     )
                 )
-                _df['onsets'] = _df['syllables'].diff() != 0
+                _df["onsets"] = _df["syllables"].diff() != 0
                 float_cols = _df.select_dtypes(include=["float64", "float32"]).columns
                 _df[float_cols] = _df[float_cols].astype("float32[pyarrow]")
                 _df = _df.astype(

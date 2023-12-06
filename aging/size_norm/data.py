@@ -10,8 +10,7 @@ from typing import Tuple, Union
 from dataclasses import dataclass
 from torch.utils.data import Dataset
 from kornia import augmentation, morphology
-from toolz import valfilter, valmap, compose, concat, merge_with
-from itertools import starmap
+from toolz import valfilter
 from sklearn.preprocessing import LabelEncoder
 from kornia.geometry.transform import get_tps_transform, warp_image_tps
 
@@ -196,8 +195,6 @@ class Augmenter:
         )
 
         self.warp_pts = load_tps_points(params.neutral_pose_warping_path)
-        # rear_warp_pts = load_tps_points(params.rear_pose_warping_path)
-        # self.warp_pts = merge_with(compose(list, concat), neutral_warp_pts, rear_warp_pts)
 
     def __call__(self, data):
         if self.params.rng.random() < self.params.tps_warp_prob:

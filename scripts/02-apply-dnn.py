@@ -74,7 +74,7 @@ def main(data_path, model_path, key, frames_key, force_rerun):
 
     data_path = Path(data_path)
     if data_path.is_dir():
-        seq = data_path.glob("**/results_00.h5")
+        seq = data_path.glob("**/*results_00.h5")
         if not force_rerun:
             seq = filter(hasnt_key(key=key), seq)
         for path in tqdm(list(seq), desc="Files"):

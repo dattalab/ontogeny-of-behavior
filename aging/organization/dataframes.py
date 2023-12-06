@@ -1,11 +1,27 @@
+import re
 import h5py
 import numba
 import numpy as np
 from pathlib import Path
 from copy import deepcopy
 from tqdm.auto import tqdm
+from datetime import datetime
 from aging.behavior.scalars import compute_scalars
 from toolz import concat, keyfilter, valmap
+
+
+_parser = re.compile(r"session_(\d+)")
+
+
+def parse_date(path):
+    return datetime.strptime(
+        _parser.search(path.parents[1].name).group(1), "%Y%m%d%H%M%S"
+    )
+
+def jax_parse_date(path: Path) -> datetime:
+    return datetime.strptime(
+        '_'.join(path.stem.split('_')[:2]), "%Y-%m-%d_%H-%M-%S"
+    )
 
 
 def create_uuid_map(folders, syllable_path, experiment) -> dict:
@@ -13,7 +29,7 @@ def create_uuid_map(folders, syllable_path, experiment) -> dict:
     for file in tqdm(
         filter(
             lambda f: get_experiment(f) == experiment,
-            concat(f.glob("**/results_00.h5") for f in folders),
+            concat(f.glob("**/*results_00.h5") for f in folders),
         )
     ):
         try:
@@ -29,12 +45,68 @@ def create_uuid_map(folders, syllable_path, experiment) -> dict:
     return uuid_map
 
 
+def ontogeny_age_map_fun(age: str) -> int:
+    """Parses a string with age written in either week or month form, and
+    converts it to week form."""
+    try:
+        return int(age.split("w")[0])
+    except ValueError:
+        return {"3": 12, "6": 24, "9": 35, "12": 52, "18": 78, "22": 90}[
+            age.split("m")[0]
+        ]
+
+
+def longtogeny_age_map_fun(age: datetime, v2: bool = False) -> float:
+    if v2:  # for both males and females
+        start_date = datetime(year=2023, month=6, day=29)
+        initial_age = 20  # days
+    else:
+        start_date = datetime(year=2021, month=3, day=30)
+        initial_age = 21  # days
+
+    # subtract start date from age, convert to weeks
+    delta = age - start_date
+    age = (delta.days + initial_age) / 7
+
+    return age
+
+
+def jax_longtogeny_age_map_fun(age: datetime) -> float:
+    start_date = datetime(year=2021, month=5, day=19)
+    initial_age = 122  # 4 months in days
+
+    # subtract start date from age, convert to weeks
+    delta = age - start_date
+    age = (delta.days + initial_age) / 7
+
+    return age
+
+
+def get_age(path: Path) -> int | float:
+    experiment = get_experiment(path)
+
+    if "ontogeny" in experiment:
+        age = ontogeny_age_map_fun(path.parents[2].name.split("_")[0])
+    elif "longtogeny_v2" in experiment:
+        age = longtogeny_age_map_fun(parse_date(path), v2=True)
+    elif "longtogeny_males" == experiment:
+        age = longtogeny_age_map_fun(parse_date(path))
+    elif "jax_longtogeny" in experiment:
+        age = jax_longtogeny_age_map_fun(jax_parse_date(path))
+    else:
+        # TODO: add age for wheel data
+        age = None
+    return age
+
+
 def get_experiment(path: Path):
     str_path = str(path)
-    if "min" in str_path and "longtogeny" in str_path:
+    if "min" in str_path and "longtogeny_07" in str_path:
         exp = f"longtogeny_v2_{path.parents[2].name.lower()}"
     elif "dlight" in str_path:
-        return "dlight"
+        exp = "dlight"
+    elif "jackson" in str_path and "win" in str_path:
+        exp = "jax_longtogeny"
     elif "longtogeny" in str_path:
         sex = path.parents[3].name.lower()
         if sex not in ("males", "females"):
@@ -42,6 +114,8 @@ def get_experiment(path: Path):
             if sex not in ("males", "females"):
                 raise ValueError("bleh")
         exp = f"longtogeny_{sex}"
+    elif "Dana_ontogeny" in str_path:
+        exp = f"dana_ontogeny_{path.parents[3].name.lower()}"
     elif "ontogeny" in str_path.lower() and "community" not in str_path:
         exp = path.parents[3].name.lower()
         if exp == "raw_data":
@@ -59,7 +133,7 @@ def insert_nans(timestamps, data, fps=30):
     missing_frames = np.round(df_timestamps / np.median(df_timestamps))
 
     fill_idx = np.where(missing_frames > 1)[0]
-    data_idx = np.arange(len(timestamps)).astype('float64')
+    data_idx = np.arange(len(timestamps)).astype("float64")
 
     filled_data = deepcopy(data)
     filled_timestamps = deepcopy(timestamps)
@@ -75,12 +149,17 @@ def insert_nans(timestamps, data, fps=30):
         if idx < len(missing_frames):
             ninserts = int(missing_frames[idx] - 1)
             data_idx = np.insert(data_idx, idx, [np.nan] * ninserts)
-            insert_timestamps = timestamps[idx - 1] + \
-                np.cumsum(np.ones(ninserts,) * 1.0 / fps)
-            filled_data = np.insert(filled_data, idx,
-                                    np.ones((ninserts, nfeatures)) * np.nan, axis=0)
-            filled_timestamps = np.insert(
-                filled_timestamps, idx, insert_timestamps)
+            insert_timestamps = timestamps[idx - 1] + np.cumsum(
+                np.ones(
+                    ninserts,
+                )
+                * 1.0
+                / fps
+            )
+            filled_data = np.insert(
+                filled_data, idx, np.ones((ninserts, nfeatures)) * np.nan, axis=0
+            )
+            filled_timestamps = np.insert(filled_timestamps, idx, insert_timestamps)
 
     if isvec:
         filled_data = np.squeeze(filled_data)
@@ -103,7 +182,7 @@ def insert_nans_numba(timestamps, data, fps=30):
     for i in fill_idx[::-1]:
         n = int(missing[i] - 1)
 
-        time_start = (timestamps[i-1] + np.cumsum(np.full(n, 1 / fps)))[::-1]
+        time_start = (timestamps[i - 1] + np.cumsum(np.full(n, 1 / fps)))[::-1]
 
         for j in range(n):
             filled_data.insert(i, np.nan)
@@ -133,7 +212,9 @@ def extract_scalars(path: Path, recon_key, rescaled_key):
             subject_name = f["metadata/acquisition/SubjectName"][()].decode()
             true_depth = f["metadata/extraction/true_depth"][()]
 
-            keep_scalars = list(filter(lambda k: "mm" in k or "px" in k, f["scalars"])) + [
+            keep_scalars = list(
+                filter(lambda k: "mm" in k or "px" in k, f["scalars"])
+            ) + [
                 "angle",
                 "velocity_theta",
             ]
@@ -144,12 +225,16 @@ def extract_scalars(path: Path, recon_key, rescaled_key):
 
             filled_ts = insert_nans_numba(ts, ts)[-1]
 
-            scalars = dict((k, f["scalars"][k][()].astype('float64')) for k in keep_scalars)
+            scalars = dict(
+                (k, f["scalars"][k][()].astype("float64")) for k in keep_scalars
+            )
             filled_scalars = valmap(lambda v: insert_nans_numba(ts, v)[0], scalars)
 
             frames = f[recon_key][()]
             recon_scalars = compute_scalars(frames, height_thresh=15)
-            recon_scalars = valmap(lambda v: insert_nans_numba(ts, v.astype('float64'))[0], recon_scalars)
+            recon_scalars = valmap(
+                lambda v: insert_nans_numba(ts, v.astype("float64"))[0], recon_scalars
+            )
         return dict(
             true_depth=true_depth,
             session_name=session_name,

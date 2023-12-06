@@ -69,6 +69,7 @@ def compute_pseudotime(
     k_neigh: int = 7,
     beta: float = 0.1,
     diffusion_iter: int = 5_000,
+    initialize_w_age: bool = False,
 ) -> pd.DataFrame:
     """Computes a measure of pseudotime based on nearest-neighbor similarities
     Parameters:
@@ -89,12 +90,17 @@ def compute_pseudotime(
 
     smoothing_mtx = make_smoothing_mtx(nn, k_neigh, beta)
 
-    seed_idx = np.where(
-        usage_df.index.get_level_values("age")
-        == usage_df.index.get_level_values("age").min()
-    )[0]
     pseudo_vals = np.zeros(len(nn))
-    pseudo_vals[seed_idx] = 1
+    if initialize_w_age:
+         pseudo_vals = usage_df.index.get_level_values("age").to_numpy() - usage_df.index.get_level_values("age").min()
+         pseudo_vals = pseudo_vals / pseudo_vals.max()
+         pseudo_vals = 1 - pseudo_vals
+    else:
+        seed_idx = np.where(
+            usage_df.index.get_level_values("age")
+            == usage_df.index.get_level_values("age").min()
+        )[0]
+        pseudo_vals[seed_idx] = 1
     ranks, out = diffuse_pseudotime(pseudo_vals, smoothing_mtx, diffusion_iter)
 
     return pd.DataFrame(
@@ -136,7 +142,9 @@ def pseudotime_springplot(
         pos=pos,
         node_size=node_size,
         width=0.1,
-        edge_color="gray",
+        # edge_color="gray",
+        linewidths=0.1,
+        edgecolors="k",
         node_color=colors,
         arrows=False,
         cmap=cmap,
