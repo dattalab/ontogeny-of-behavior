@@ -26,17 +26,20 @@ from aging.organization.dataframes import (
             "longtogeny_v2_males",
             "longtogeny_females",
             "longtogeny_v2_females",
+            "dana_ontogeny_males",
+            "dana_ontogeny_females",
             "ontogeny_males",
             "ontogeny_females",
             "wheel",
             "dlight",
             "jax_longtogeny",
+            "klothos"
         ]
     ),
 )
 @click.option("--data-version", type=int, default=5)
 @click.option("--df-version", type=int, default=0)
-@click.option("--recon-key", type=str, default="win_size_norm_frames_v4")
+@click.option("--recon-key", type=str, default="win_size_norm_frames_v6")
 @click.option("--rescaled-key", type=str, default="rescaled_frames")
 def main(data_folder, experiment, data_version, df_version, recon_key, rescaled_key):
     n_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))

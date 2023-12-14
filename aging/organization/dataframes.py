@@ -18,10 +18,9 @@ def parse_date(path):
         _parser.search(path.parents[1].name).group(1), "%Y%m%d%H%M%S"
     )
 
+
 def jax_parse_date(path: Path) -> datetime:
-    return datetime.strptime(
-        '_'.join(path.stem.split('_')[:2]), "%Y-%m-%d_%H-%M-%S"
-    )
+    return datetime.strptime("_".join(path.stem.split("_")[:2]), "%Y-%m-%d_%H-%M-%S")
 
 
 def create_uuid_map(folders, syllable_path, experiment) -> dict:
@@ -91,6 +90,9 @@ def get_age(path: Path) -> int | float:
         age = longtogeny_age_map_fun(parse_date(path), v2=True)
     elif "longtogeny_males" == experiment:
         age = longtogeny_age_map_fun(parse_date(path))
+    elif "klothos" == experiment:
+        # TODO: make sure that this changes if we do long-term imaging of the klothos mice
+        age = 90  # weeks
     elif "jax_longtogeny" in experiment:
         age = jax_longtogeny_age_map_fun(jax_parse_date(path))
     else:
@@ -103,10 +105,16 @@ def get_experiment(path: Path):
     str_path = str(path)
     if "min" in str_path and "longtogeny_07" in str_path:
         exp = f"longtogeny_v2_{path.parents[2].name.lower()}"
+    elif "wheel" in str_path.lower():
+        exp = "wheel"
     elif "dlight" in str_path:
         exp = "dlight"
     elif "jackson" in str_path and "win" in str_path:
         exp = "jax_longtogeny"
+    elif "Klothos" in str_path:
+        exp = "klothos"
+    elif "Epig" in str_path:
+        exp = "epigenetic_clock"
     elif "longtogeny" in str_path:
         sex = path.parents[3].name.lower()
         if sex not in ("males", "females"):
@@ -120,8 +128,6 @@ def get_experiment(path: Path):
         exp = path.parents[3].name.lower()
         if exp == "raw_data":
             exp = path.parents[2].name.lower()
-    elif "wheel" in str_path.lower():
-        exp = "wheel"
     else:
         exp = path.parents[2].name
     return exp

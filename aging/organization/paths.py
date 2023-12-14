@@ -18,5 +18,7 @@ FOLDERS = [
     '/n/groups/datta/min/longtogeny_052023/Males',  # second round of original longtogeny expt
     '/n/groups/datta/win/longtogeny/data/jackson-labs/datta_i',  # data from jax
     # '/n/groups/datta/min/longtogeny_052023/Females',  # second round of original longtogeny expt
+    '/n/groups/datta/Dana/Ontogeny/raw_data/Klothos',
+    '/n/groups/datta/Dana/Ontogeny/raw_data/Epigclock',
 ]
 FOLDERS = tuple(Path(f) for f in FOLDERS)
