@@ -11,8 +11,9 @@ from dataclasses import dataclass
 from torch.utils.data import Dataset
 from kornia import augmentation, morphology
 from toolz import valfilter
+from functools import cache
 from sklearn.preprocessing import LabelEncoder
-from kornia.geometry.transform import get_tps_transform, warp_image_tps
+from kornia.geometry.transform import get_tps_transform, warp_image_tps, resize, scale
 
 
 @dataclass
@@ -21,10 +22,11 @@ class AugmentationParams:
     scale_x: Tuple[float, float] = (0.5, 1.85)
     scale_y: Tuple[float, float] = (0.5, 1.85)
     scale_z: Tuple[float, float] = (0.8, 1.2)
+    shear_angles: Tuple[int, int, int, int] = (-15, 15, -15, 15)
     translate_x: Tuple[float, float] = (-0.2, 0.2)
     translate_y: Tuple[float, float] = (-0.3, 0.3)
     height: Tuple[int, int] = (-5, 5)
-    white_noise_scale: float = 3  # mm
+    white_noise_scale: float = 5  # mm
     min_threshold_range: Tuple[int, int] = (1, 20)
     max_threshold_range: Tuple[int, int] = (40, 120)
 
@@ -44,12 +46,15 @@ class AugmentationParams:
     rotation_prob: float = 0.7
     translation_prob: float = 0.7
     scale_prob: float = 0.7
+    shear_prob: float = 0.35
     threshold_prob: float = 0.3
     height_offset_prob: float = 0.5
     height_scale_prob: float = 0.7
     preserve_aspect_prob: float = 0.5
-    white_noise_prob: float = 0.3
+    white_noise_prob: float = 0.2
+    scaled_white_noise_prob: float = 0.35
     flip_prob: float = 0.5
+    zoom_unzoom_prob: float = 0.3
     random_elastic_prob: float = 0.2
     tps_warp_prob: float = 0.35
     wall_reflection_prob: float = 0.15
@@ -74,6 +79,11 @@ class TrainingPaths:
 def white_noise(img: torch.Tensor, params: AugmentationParams):
     img = img + torch.randn_like(img, device=img.device) * params.white_noise_scale
     return torch.clamp(img, 0, None)
+
+
+def scaled_white_noise(img: torch.Tensor, params: AugmentationParams):
+    noise = torch.randn([params.rng.randint(4, img.shape[-1])] * 2, device=img.device) * params.white_noise_scale
+    return torch.clamp(img + resize(noise, img.shape[-2:]), 0, None)
 
 
 def normalize(img):
@@ -132,6 +142,15 @@ def clean(frame, tail_ksize=11, height_thresh=12, dilate=True, dilation_ksize=3)
     return frame * mask
 
 
+def zoom_unzoom(frame: torch.Tensor, rng, scale_range) -> torch.Tensor:
+    scale_factor = rng.uniform(*scale_range)
+    scale_factor = torch.ones((len(frame), 2), device=frame.device) * scale_factor
+    scaled_frame = scale(frame, scale_factor)
+    unscaled_frame = scale(scaled_frame, 1 / scale_factor)
+    return unscaled_frame
+
+
+@cache
 def get_circular_kernel(size):
     k = torch.zeros((size, size), dtype=torch.float32)
     mid = size // 2
@@ -183,6 +202,7 @@ class Augmenter:
             ),
             p=params.scale_prob,
         )
+        self.shear = augmentation.RandomShear(params.shear_angles, p=params.shear_prob)
 
         with h5py.File(wall_noise_path, "r") as f:
             self.wall_noise = torch.tensor(f["wall_frames"][()], dtype=torch.float32)
@@ -197,6 +217,11 @@ class Augmenter:
         self.warp_pts = load_tps_points(params.neutral_pose_warping_path)
 
     def __call__(self, data):
+
+        # add white noise correlated with scaling
+        if self.params.rng.random() < self.params.white_noise_prob:
+            data = white_noise(data, self.params)
+
         if self.params.rng.random() < self.params.tps_warp_prob:
             params = select_tps_points(self.warp_pts, len(data), rng=self.params.rng, device=data.device)
             data = warp_image_tps(data, *params)
@@ -209,6 +234,7 @@ class Augmenter:
 
         data = self.rotate(data)
         data = self.translate(data)
+        data = self.shear(data)
 
         height_scale = (
             torch.rand(len(data), *(1,) * (data.ndim - 1), device=data.device)
@@ -224,6 +250,10 @@ class Augmenter:
         if self.params.elastic_flag:
             data = self.elastic(data)
 
+        # shrink then re-expand to simulate data loss and changes in noise scaling
+        if self.params.rng.random() < self.params.zoom_unzoom_prob:
+            data = zoom_unzoom(data, self.params.rng, self.params.scale_x)
+
         # add wall noise
         if self.params.rng.random() < self.params.wall_reflection_prob:
             inds = self.params.rng.choices(range(len(self.wall_noise)), k=len(data))
@@ -231,9 +261,13 @@ class Augmenter:
                 data, self.wall_noise[inds].to(data.device).unsqueeze(1)
             )
 
-        # add white noise
+        # add white noise uncorrelated with scaling
         if self.params.rng.random() < self.params.white_noise_prob:
             data = white_noise(data, self.params)
+
+        # add scaled white noise
+        if self.params.rng.random() < self.params.scaled_white_noise_prob:
+            data = scaled_white_noise(data, self.params)
 
         # min threshold
         if self.params.rng.random() < self.params.threshold_prob:
@@ -258,7 +292,6 @@ class Augmenter:
         if self.params.rng.random() < self.params.height_offset_prob:
             data = data + offset
             data = torch.clamp_min(data, 0)
-
 
         return normalize(data)
 

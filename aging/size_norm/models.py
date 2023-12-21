@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from toolz import partial, concatv
+from toolz import partial
 from typing import Optional
 from torchvision.ops import SqueezeExcitation
 
@@ -16,6 +16,7 @@ class ConvNormAct(nn.Sequential):
         activation: Optional[nn.Module] = nn.LeakyReLU,
         norm: Optional[nn.Module] = nn.BatchNorm2d,
         separable=False,
+        dropout_p: float = 0.0,
         **kwargs
     ):
         conv = (
@@ -28,6 +29,9 @@ class ConvNormAct(nn.Sequential):
         super().__init__(
             conv(in_features, out_features),
             norm(out_features) if norm else nn.Identity(),
+            nn.Dropout2d(dropout_p)
+            if (dropout_p > 0) and (out_features > 1)
+            else nn.Identity(),
             activation() if activation else nn.Identity(),
         )
 
@@ -175,23 +179,36 @@ class DoubleConv(nn.Module):
         separable=True,
         residual=False,
         activation=nn.LeakyReLU,
+        dropout_p: float = 0.0,
     ):
         super().__init__()
         if mid_channels is None:
             mid_channels = out_channels
         self.block = nn.Sequential(
             ConvNormAct(
-                in_channels, mid_channels, separable=separable, activation=activation
+                in_channels,
+                mid_channels,
+                separable=separable,
+                activation=activation,
+                dropout_p=dropout_p,
             ),
             ConvNormAct(
-                mid_channels, out_channels, separable=separable, activation=activation
+                mid_channels,
+                out_channels,
+                separable=separable,
+                activation=activation,
+                dropout_p=dropout_p,
             ),
         )
         if residual:
             self.block = ResidualAdd(
                 self.block,
                 shortcut=ConvNormAct(
-                    in_channels, out_channels, kernel_size=1, activation=activation
+                    in_channels,
+                    out_channels,
+                    kernel_size=1,
+                    activation=activation,
+                    dropout_p=dropout_p,
                 ),
             )
 
@@ -207,13 +224,20 @@ class Down(nn.Module):
         separable=True,
         double_conv=True,
         residual=False,
+        dropout_p: float = 0.0,
         activation=nn.LeakyReLU,
     ):
         super().__init__()
         conv = partial(DoubleConv, residual=residual) if double_conv else ConvNormAct
         self.maxpool_conv = nn.Sequential(
             nn.MaxPool2d(2),
-            conv(in_channels, out_channels, separable=separable, activation=activation),
+            conv(
+                in_channels,
+                out_channels,
+                separable=separable,
+                activation=activation,
+                dropout_p=dropout_p,
+            ),
         )
 
     def forward(self, x):
@@ -230,6 +254,7 @@ class Up(nn.Module):
         double_conv=True,
         separable=True,
         residual=False,
+        dropout_p: float = 0.0,
         activation=nn.LeakyReLU,
     ):
         super().__init__()
@@ -240,6 +265,7 @@ class Up(nn.Module):
             out_channels,
             separable=separable,
             activation=activation,
+            dropout_p=dropout_p,
         )
 
         if bilinear:
@@ -271,6 +297,147 @@ class OutConv(nn.Module):
 
     def forward(self, x):
         return self.conv(x)
+
+
+class Encoder(nn.Module):
+    def __init__(
+        self, channels, depths, double_conv, residual, separable, activation, dropout_p
+    ):
+        super().__init__()
+        conv = partial(DoubleConv, residual=residual) if double_conv else ConvNormAct
+
+        self.down = nn.ModuleList(
+            [
+                conv(
+                    1,
+                    channels[0],
+                    separable=separable,
+                    activation=activation,
+                    dropout_p=dropout_p,
+                )
+            ]
+        )
+        # downsample
+        for i in range(len(depths)):
+            to_add = []
+            for j in range(depths[i]):
+                # if last conv of this layer, downsample
+                in_ch = channels[i] if j == 0 else channels[i + 1]
+                out_ch = channels[i + 1]
+                if j == depths[i] - 1:
+                    to_add.append(
+                        Down(
+                            in_ch,
+                            out_ch,
+                            separable=separable,
+                            double_conv=double_conv,
+                            activation=activation,
+                            dropout_p=dropout_p,
+                        )
+                    )
+                else:
+                    to_add.append(
+                        conv(
+                            in_ch,
+                            out_ch,
+                            separable=separable,
+                            activation=activation,
+                            dropout_p=dropout_p,
+                        )
+                    )
+            self.down.extend(to_add)
+
+    def forward(self, x):
+        for layer in self.down:
+            x = layer(x)
+        return x
+
+
+class Bottleneck(nn.Module):
+    def __init__(
+        self,
+        img_size,
+        depth,
+        final_channel,
+        bottleneck_channels,
+        latent_dim,
+        separable,
+        activation,
+        dropout_p,
+    ):
+        super().__init__()
+        final_img_size = img_size // (2**depth)
+        bottle_in = bottleneck_channels * (final_img_size**2)
+        self.bottleneck = nn.Sequential(
+            ConvNormAct(
+                final_channel,
+                bottleneck_channels,
+                separable=separable,
+                activation=activation,
+                dropout_p=dropout_p,
+            ),
+            nn.Flatten(),
+            nn.Linear(bottle_in, latent_dim),
+            nn.Tanh(),
+            nn.Linear(latent_dim, bottle_in),
+            activation(),
+            nn.Unflatten(1, (bottleneck_channels, final_img_size, final_img_size)),
+            ConvNormAct(
+                bottleneck_channels,
+                final_channel,
+                separable=separable,
+                activation=activation,
+                dropout_p=dropout_p,
+            ),
+        )
+
+    def forward(self, x):
+        return self.bottleneck(x)
+
+
+class Decoder(nn.Module):
+    def __init__(
+        self, channels, depths, double_conv, residual, separable, activation, dropout_p
+    ):
+        super().__init__()
+        conv = partial(DoubleConv, residual=residual) if double_conv else ConvNormAct
+
+        self.up = nn.ModuleList([])
+        # upsample
+        for i in range(len(depths) - 1, -1, -1):
+            to_add = []
+            for j in range(depths[i]):
+                in_ch = channels[i + 1] if j == 0 else channels[i]
+                out_ch = channels[i]
+                if j == depths[i] - 1:
+                    to_add.append(
+                        Up(
+                            in_ch,
+                            out_ch,
+                            separable=separable,
+                            double_conv=double_conv,
+                            activation=activation,
+                            dropout_p=dropout_p,
+                        )
+                    )
+                else:
+                    to_add.append(
+                        conv(
+                            in_ch,
+                            out_ch,
+                            separable=separable,
+                            activation=activation,
+                            dropout_p=dropout_p,
+                        )
+                    )
+            self.up.extend(to_add)
+
+        self.up.append(OutConv(channels[0], 1))
+
+    def forward(self, x):
+        for layer in self.up:
+            x = layer(x)
+        return x
 
 
 # ----- model classes ----- #
@@ -380,7 +547,11 @@ class Autoencoder(nn.Module):
         separable=True,
         double_conv=True,
         residual=False,
+        dropout_p: float = 0.0,
         activation: nn.Module = nn.LeakyReLU,
+        bottleneck: Optional[int] = None,
+        bottleneck_channels: Optional[int] = 30,
+        img_size: Optional[int] = None,
     ):
         """Channels must include the input channel count (usually 1) as well"""
         super().__init__()
@@ -388,64 +559,32 @@ class Autoencoder(nn.Module):
         depths = [int(init_depth * depth_scaling**i) for i in range(depth)]
         channels = [input_channel] + channels
 
-        conv = partial(DoubleConv, residual=residual) if double_conv else ConvNormAct
+        self.has_bottleneck = bottleneck is not None and bottleneck > 0
+        if self.has_bottleneck:
+            assert img_size is not None, "Must provide image size for bottleneck"
+            self.bottleneck = Bottleneck(
+                img_size,
+                depth,
+                channels[-1],
+                bottleneck_channels,
+                bottleneck,
+                separable,
+                activation,
+                dropout_p,
+            )
 
-        self.down = nn.ModuleList(
-            [conv(1, input_channel, separable=separable, activation=activation)]
+        self.encoder = Encoder(
+            channels, depths, double_conv, residual, separable, activation, dropout_p
         )
-        # downsample
-        for i in range(depth):
-            to_add = []
-            for j in range(depths[i]):
-                # if last conv of this layer, downsample
-                in_ch = channels[i] if j == 0 else channels[i + 1]
-                out_ch = channels[i + 1]
-                if j == depths[i] - 1:
-                    to_add.append(
-                        Down(
-                            in_ch,
-                            out_ch,
-                            separable=separable,
-                            double_conv=double_conv,
-                            activation=activation,
-                        )
-                    )
-                else:
-                    to_add.append(
-                        conv(in_ch, out_ch, separable=separable, activation=activation)
-                    )
-            self.down.extend(to_add)
-
-        self.up = nn.ModuleList([])
-        # upsample
-        for i in range(depth - 1, -1, -1):
-            to_add = []
-            for j in range(depths[i]):
-                in_ch = channels[i + 1] if j == 0 else channels[i]
-                out_ch = channels[i]
-                if j == depths[i] - 1:
-                    to_add.append(
-                        Up(
-                            in_ch,
-                            out_ch,
-                            separable=separable,
-                            double_conv=double_conv,
-                            activation=activation,
-                        )
-                    )
-                else:
-                    to_add.append(
-                        conv(in_ch, out_ch, separable=separable, activation=activation)
-                    )
-            self.up.extend(to_add)
-
-        self.up.append(OutConv(channels[0], 1))
+        self.decoder = Decoder(
+            channels, depths, double_conv, residual, separable, activation, dropout_p
+        )
 
     def forward(self, x):
-        for layer in self.down:
-            x = layer(x)
-        for layer in self.up:
-            x = layer(x)
+        x = self.encoder(x)
+        if self.has_bottleneck:
+            x = self.bottleneck(x)
+        x = self.decoder(x)
         return F.sigmoid(x)
 
 
