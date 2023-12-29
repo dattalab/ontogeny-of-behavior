@@ -4,6 +4,7 @@ import click
 import random
 import subprocess
 import numpy as np
+import pprint
 from tqdm.auto import tqdm
 from pathlib import Path
 from copy import deepcopy
@@ -14,15 +15,15 @@ script = """#!/bin/env bash
 #SBATCH -c 1
 #SBATCH -n 1
 #SBATCH --mem=20G
-#SBATCH -p gpu_quad
+#SBATCH -p {partition}
 #SBATCH --gres=gpu:1
 #SBATCH -t 02:00:00
 #SBATCH --output={folder}/model-scan-%j.out
 
 source $HOME/.bashrc
+# module load gcc/9.2.0
+# module load cuda/12.1
 conda activate aging
-module load gcc/9.2.0
-module load cuda/11.7
 python /home/wg41/code/ontogeny/scripts/03-train-size-norm.py {config_path}
 """
 
@@ -47,7 +48,9 @@ def process_space(space):
 @click.option("--seed", default=0)
 @click.option("--stage", default=1, type=int)
 @click.option("--dry-run", is_flag=True)
-def main(config_path, template_path, seed, stage, dry_run):
+@click.option("--partition", default="gpu_quad", type=click.Choice(["gpu_quad", "gpu_requeue"]))
+@click.option("--emit-once", is_flag=True)
+def main(config_path, template_path, seed, stage, dry_run, partition, emit_once):
     config = toml.load(config_path)
     template = toml.load(template_path)
     # try to tie all seeds together as much as possible for reproducibility
@@ -73,19 +76,21 @@ def main(config_path, template_path, seed, stage, dry_run):
         updated_params['paths']['saving'] = str(save_path)
         if dry_run:
             print("Parameter set", i)
-            print(parameter_set)
+            pprint.pprint(parameter_set)
             print('---')
-            print(updated_params)
+            pprint.pprint(updated_params)
             print('---')
         else:
             save_path.mkdir(parents=True, exist_ok=True)
             with open(save_path / "config.toml", "w") as f:
                 toml.dump(updated_params, f)
 
-            new_script = script.format(folder=save_path, config_path=save_path / "config.toml")
+            new_script = script.format(folder=save_path, config_path=save_path / "config.toml", partition=partition)
             with open(save_path / "run.sh", "w") as f:
                 f.write(new_script)
             subprocess.run(["sbatch", str(save_path / "run.sh")])
+        if emit_once:
+            return
 
 
 if __name__ == "__main__":

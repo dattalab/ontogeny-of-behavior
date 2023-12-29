@@ -42,6 +42,8 @@ def main(config_path, checkpoint, progress):
             model_arch = models.EfficientAutoencoder
         case "efficient_unet":
             model_arch = models.EfficientUNet
+        case "vae":
+            model_arch = models.VariationalAutoencoder
         case _:
             raise ValueError(f"Unknown model architecture {config['model']['arch']}")
 
@@ -59,7 +61,7 @@ def main(config_path, checkpoint, progress):
         augmentation,
         model=model_arch,
         model_params=model_params,
-        batch_size=64 if get_in(['model', 'init_channel'], config, 32) < 512 else 32,
+        batch_size=64 if get_in(["model", "init_channel"], config, 32) < 512 else 32,
         **dissoc(config["model"]["lightning"], "arch"),
         seed=config["augmentation"]["seed"],
     )
@@ -75,7 +77,7 @@ def main(config_path, checkpoint, progress):
         monitor="val_loss",
         patience=get_in(["callbacks", "stopping", "patience"], config, 13),
         mode="min",
-        verbose=True
+        verbose=True,
     )
 
     dynamics_cb = BehaviorValidation(
@@ -108,7 +110,9 @@ def main(config_path, checkpoint, progress):
             CSVLogger(save_folder, name="size_norm_scan"),
             TensorBoardLogger(save_folder, name="size_norm_scan"),
         ],
-        accumulate_grad_batches=1 if get_in(['model', 'init_channel'], config, 32) < 512 else 2,
+        accumulate_grad_batches=1
+        if get_in(["model", "init_channel"], config, 32) < 512
+        else 2,
         enable_progress_bar=progress,
     )
     trainer.fit(model, ckpt_path=checkpoint)
