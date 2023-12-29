@@ -1,7 +1,9 @@
 import toml
+import numpy as np
 import pandas as pd
 from pathlib import Path
-from toolz import get_in
+from sklearn.decomposition import PCA
+from toolz import get_in, valmap, groupby, assoc, compose
 
 
 def get_mag(s):
@@ -58,3 +60,35 @@ def load_model_parameters(files: list[Path]):
             continue
     results = pd.DataFrame(results)
     return results
+
+
+def flatten(x):
+    return x.reshape(len(x), -1)
+
+
+def subsample(data, subset=200, seed=0):
+    np.random.seed(seed)
+    sample = []
+    for v in data.values():
+        sample.append(v[np.random.permutation(len(v))[:subset]])
+    return np.concatenate(sample, axis=0)
+
+
+def multi_stage_pca(data, subset_frames=200, seed=0):
+    '''Data is a dict where each key is a tuple of (age, session_path)'''
+
+    # group by age, keep just values
+    grouped_data = groupby(lambda x: x[0][0], data.items())
+    grouped_data = valmap(lambda l: np.concatenate(list(map(lambda x: x[1], l)), axis=0), grouped_data)
+
+    train = subsample(grouped_data, subset=subset_frames, seed=seed)
+    pca = PCA(n_components=10).fit(flatten(train))
+
+    apply_pca = compose(pca.transform, flatten)
+
+    pcs = valmap(
+        apply_pca,
+        data,
+    )
+
+    return pcs

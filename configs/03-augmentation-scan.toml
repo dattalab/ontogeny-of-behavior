@@ -1,0 +1,5 @@
+[paths]
+saving = '/n/groups/datta/win/longtogeny/size_norm/models/ae_augmentation_scan_00'
+
+[model.stage1]
+

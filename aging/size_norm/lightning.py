@@ -6,7 +6,7 @@ import numpy as np
 import lightning.pytorch as pl
 import torch.nn.functional as F
 from io import BytesIO
-from toolz import curry
+from toolz import curry, partial, keymap
 from pathlib import Path
 from tqdm.auto import tqdm
 from ipywidgets import Image
@@ -26,6 +26,7 @@ from aging.size_norm.data import (
 )
 from aging.size_norm.models import Autoencoder, LogisticRegression, Regression
 from aging.size_norm.test import classify_age, dynamics_correlation
+from aging.size_norm.vae_losses import vae_loss
 from torchmetrics.functional import r2_score
 
 
@@ -135,7 +136,10 @@ def pgd_linf(
 
     model.eval()
     for t in range(num_iter):
-        loss = loss_fun(model(X + delta), y)
+        out = model(X + delta)
+        if isinstance(out, tuple):
+            out = out[0]
+        loss = loss_fun(out, y)
         loss.backward()
         delta.data = (delta + alpha * delta.grad.detach().sign()).clamp(
             -epsilon, epsilon
@@ -177,6 +181,21 @@ def abs_r2_loss(input, target):
     return 1 - torch.abs(r2_score(input, target))
 
 
+def add_weight_decay(model, weight_decay=1e-5):
+    decay = []
+    no_decay = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if 'norm' in name:
+            no_decay.append(param)
+        else:
+            decay.append(param)
+    return [
+        {'params': no_decay, 'weight_decay': 0.},
+        {'params': decay, 'weight_decay': weight_decay}]
+
+
 # ----- lightning module ----- #
 class SizeNormModel(pl.LightningModule):
     def __init__(
@@ -204,6 +223,7 @@ class SizeNormModel(pl.LightningModule):
         l2_regularization_class_alpha: float = 1e-6,
         use_l2_regularization_sn: bool = False,
         l2_regularization_sn_alpha: float = 1e-6,
+        vae_loss_params=dict(),
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -216,6 +236,12 @@ class SizeNormModel(pl.LightningModule):
 
         self.model = model(**model_params).to(device)
         self.augment = Augmenter(aug_params, paths.wall_noise)
+
+        self.loss_fun = (
+            F.mse_loss
+            if not "Variational" in model.__name__
+            else partial(vae_loss, **vae_loss_params)
+        )
 
         if train_adversarial:
             if adversarial_type == "class":
@@ -362,18 +388,28 @@ class SizeNormModel(pl.LightningModule):
         frames, target = batch
         yhat = self(frames, target)
 
-        loss = F.mse_loss(yhat, target)
-        self.log("train_loss", loss)
-
-        return dict(loss=loss)
+        loss = self.loss_fun(yhat, target)
+        # vae loss returns a tuple
+        if isinstance(loss, tuple):
+            self.log_dict(loss[1])
+            return dict(loss=loss[0])
+        else:
+            self.log("train_loss", loss)
+            return dict(loss=loss)
 
     def validation_step(self, batch, batch_idx):
         frames, target = batch
         yhat = self(frames)
 
-        loss = F.mse_loss(yhat, target)
-        self.log("val_loss", loss, prog_bar=True)
+        loss = self.loss_fun(yhat, target)
+        if isinstance(loss, tuple):
+            self.log_dict(keymap(lambda k: "val_" + k, loss[1]))
+            self.log("val_loss", loss[0], prog_bar=True)
+        else:
+            self.log("val_loss", loss, prog_bar=True)
         if batch_idx == 0:
+            if isinstance(yhat, tuple):
+                yhat = yhat[0]
             self.log_tb_images(frames, target, yhat, batch_idx)
         return dict(loss=loss)
 
@@ -395,14 +431,18 @@ class SizeNormModel(pl.LightningModule):
         tb_logger.add_image(f"Image/{batch_idx}_{self.current_epoch}", _image, 0)
 
     def on_validation_epoch_end(self):
-        if self.hparams.train_adversarial and "val_loss" in self.trainer.callback_metrics:
+        if (
+            self.hparams.train_adversarial
+            and "val_loss" in self.trainer.callback_metrics
+        ):
             self.lr_schedulers().step(self.trainer.callback_metrics["val_loss"])
 
     def configure_optimizers(self):
+        params = add_weight_decay(self.model, self.hparams.weight_decay)
         optimizer = torch.optim.AdamW(
-            self.model.parameters(),
+            params,
             lr=self.hparams.lr,
-            weight_decay=self.hparams.weight_decay,
+            weight_decay=0,
         )
         opt_dict = dict(
             optimizer=optimizer,
@@ -473,8 +513,11 @@ def predict(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if not isinstance(model, torch.nn.Module):
-        model = SizeNormModel.load_from_checkpoint(model, map_location=device)
-        model.freeze()
+        if isinstance(model, Path) and model.suffix == ".pt":
+            model = torch.jit.load(model, map_location=device)
+        else:
+            model = SizeNormModel.load_from_checkpoint(model, map_location=device)
+            model.freeze()
     model.eval()
 
     output = []
@@ -525,7 +568,9 @@ class AgingModel(pl.LightningModule):
         return loss
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.classifier.parameters(), lr=self.lr, weight_decay=1e-5)
+        return torch.optim.AdamW(
+            self.classifier.parameters(), lr=self.lr, weight_decay=1e-5
+        )
 
     def setup(self, stage=None):
         dataset = AgeClassifierDataset(
@@ -587,7 +632,9 @@ class SizeNormModelStep2(pl.LightningModule):
         return loss
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.sn_model.parameters(), lr=self.lr, weight_decay=1e-5)
+        return torch.optim.AdamW(
+            self.sn_model.parameters(), lr=self.lr, weight_decay=1e-5
+        )
 
     def setup(self, stage=None):
         dataset = SizeNormDataset(

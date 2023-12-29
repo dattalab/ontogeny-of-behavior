@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from toolz import partial
 from typing import Optional
 from torchvision.ops import SqueezeExcitation
+from collections import OrderedDict
 
 
 # From: https://github.com/FrancescoSaverioZuppichini/BottleNeck-InvertedResidual-FusedMBConv-in-PyTorch
@@ -26,14 +27,15 @@ class ConvNormAct(nn.Sequential):
                 nn.Conv2d, kernel_size=kernel_size, padding=kernel_size // 2, **kwargs
             )
         )
-        super().__init__(
-            conv(in_features, out_features),
-            norm(out_features) if norm else nn.Identity(),
-            nn.Dropout2d(dropout_p)
-            if (dropout_p > 0) and (out_features > 1)
-            else nn.Identity(),
-            activation() if activation else nn.Identity(),
-        )
+        layers = OrderedDict()
+        layers['conv'] = conv(in_features, out_features)
+        if norm:
+            layers['norm'] = norm(out_features)
+        if dropout_p > 0 and out_features > 1:
+            layers['dropout'] = nn.Dropout2d(dropout_p)
+        if activation:
+            layers['activation'] = activation()
+        super().__init__(layers)
 
 
 class DepthwiseSeparableConv(nn.Sequential):
@@ -364,11 +366,13 @@ class Bottleneck(nn.Module):
         separable,
         activation,
         dropout_p,
+        is_variational=False,
     ):
         super().__init__()
+        self.is_variational = is_variational
         final_img_size = img_size // (2**depth)
         bottle_in = bottleneck_channels * (final_img_size**2)
-        self.bottleneck = nn.Sequential(
+        down_layers = [
             ConvNormAct(
                 final_channel,
                 bottleneck_channels,
@@ -377,8 +381,16 @@ class Bottleneck(nn.Module):
                 dropout_p=dropout_p,
             ),
             nn.Flatten(),
-            nn.Linear(bottle_in, latent_dim),
-            nn.Tanh(),
+        ]
+        if is_variational:
+            self.mu = nn.Linear(bottle_in, latent_dim)
+            self.logvar = nn.Linear(bottle_in, latent_dim)
+        else:
+            down_layers.append(nn.Linear(bottle_in, latent_dim))
+        
+        self.down = nn.Sequential(*down_layers)
+
+        up_layers = [
             nn.Linear(latent_dim, bottle_in),
             activation(),
             nn.Unflatten(1, (bottleneck_channels, final_img_size, final_img_size)),
@@ -389,10 +401,32 @@ class Bottleneck(nn.Module):
                 activation=activation,
                 dropout_p=dropout_p,
             ),
-        )
+        ]
+        if not is_variational:
+            up_layers.insert(0, nn.Tanh())
+        
+        self.up = nn.Sequential(*up_layers)
+
+    def reparameterize(self, mu, logvar):
+        if self.training:
+            std = torch.exp(0.5 * logvar)
+            eps = torch.randn_like(std)
+            return eps.mul(std).add_(mu)
+        else:
+            return mu
+        
+    def pre_decoder(self, latents):
+        return self.up(latents)
 
     def forward(self, x):
-        return self.bottleneck(x)
+        x = self.down(x)
+        if self.is_variational:
+            mu = self.mu(x)
+            logvar = self.logvar(x) + 1e-6  
+            # resampled latent space
+            x = self.reparameterize(mu, logvar)
+            return self.pre_decoder(x), x, mu, logvar
+        return self.pre_decoder(x)
 
 
 class Decoder(nn.Module):
@@ -586,6 +620,54 @@ class Autoencoder(nn.Module):
             x = self.bottleneck(x)
         x = self.decoder(x)
         return F.sigmoid(x)
+
+
+class VariationalAutoencoder(nn.Module):
+    def __init__(
+        self,
+        depth: int,
+        init_channel: int,
+        init_depth: int,
+        channel_scaling: float,
+        depth_scaling: float,
+        input_channel: int = 16,
+        separable=True,
+        double_conv=True,
+        residual=False,
+        dropout_p: float = 0.0,
+        activation: nn.Module = nn.LeakyReLU,
+        bottleneck: Optional[int] = None,
+        bottleneck_channels: Optional[int] = 30,
+        img_size: Optional[int] = None,
+    ):
+        """Channels must include the input channel count (usually 1) as well"""
+        super().__init__()
+        channels = [int(init_channel * channel_scaling**i) for i in range(depth)]
+        depths = [int(init_depth * depth_scaling**i) for i in range(depth)]
+        channels = [input_channel] + channels
+
+        self.encoder = Encoder(
+            channels, depths, double_conv, residual, separable, activation, dropout_p
+        )
+
+        self.bottleneck = Bottleneck(img_size, depth, channels[-1], bottleneck_channels, bottleneck, separable, activation, dropout_p, is_variational=True)
+
+        self.decoder = Decoder(
+            channels, depths, double_conv, residual, separable, activation, dropout_p
+        )
+
+    def decode(self, z):
+        return self.decoder(self.bottleneck.pre_decoder(z))
+
+    def forward(self, x):
+        x = self.encoder(x)
+
+        x, z, mu, logvar = self.bottleneck(x)
+
+        x = self.decoder(x)
+        return F.sigmoid(x), z, mu, logvar
+
+
 
 
 class EfficientAutoencoder(nn.Module):

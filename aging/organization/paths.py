@@ -1,4 +1,7 @@
 from pathlib import Path
+from dataclasses import dataclass
+from toolz import groupby, concat
+from aging.organization.dataframes import get_experiment
 
 FOLDERS = [
     '/n/groups/datta/Dana/Ontogeny/raw_data/Ontogeny_females',
@@ -22,3 +25,21 @@ FOLDERS = [
     '/n/groups/datta/Dana/Ontogeny/raw_data/Epigclock',
 ]
 FOLDERS = tuple(Path(f) for f in FOLDERS)
+
+
+def get_experiment_grouped_files():
+    return groupby(get_experiment, concat(f.glob("**/*results_00.h5") for f in FOLDERS))
+
+
+
+@dataclass
+class ValidationPaths:
+    age_classifier: Path = Path('/n/groups/datta/win/longtogeny/size_norm/validation_data/poses_for_age_classifier.p')
+    classifier_pipeline: Path = Path('/n/groups/datta/win/longtogeny/pipeline_results/age_classifier')
+
+
+@dataclass
+class TrainingPaths:
+    tps_training_data: Path = Path('/n/groups/datta/win/longtogeny/size_norm/training_data/poses_for_tps_mapping.p.gz')
+    tps_fits: Path = Path('/n/groups/datta/win/longtogeny/size_norm/training_data/tps_fits.p.gz')
+    tps_multivariate_t_params: Path = Path('/n/groups/datta/win/longtogeny/size_norm/training_data/tps_multivariate_t_params.p.gz')

@@ -75,7 +75,7 @@ activation = 'GELU'
 adversarial_prob = 0.01
 lr = 0.001
 weight_decay = 0.00001
-arch = 'ae'  # ae, unet, efficient, efficient_unet
+arch = 'ae'  # ae, unet, efficient, efficient_unet, vae
 train_adversarial = false
 adversarial_age_lr = 1e-4
 adversarial_arch = "nonlinear"  # linear, nonlinear
@@ -96,6 +96,11 @@ start_epoch = 30
 start_value = 1e-7
 max_value = 2e-4
 epochs_to_max = 30
+
+[model.lightning.vae_loss_params]
+beta = 5
+kl_factor = 1
+gauss_std = 0.075
 
 [model.ae]
 double_conv = true
@@ -118,3 +123,12 @@ expansion = 4
 [model.efficient_unet]
 fused = 1
 expansion = 4
+
+[model.vae]
+double_conv = true
+separable = true
+residual = true
+img_size = 80
+bottleneck = 25
+# new parameter
+dropout_p = 0.2
