@@ -18,7 +18,7 @@ def keep(d, keys):
 
 @click.command()
 @click.argument("config_path", type=click.Path(exists=True))
-@click.option("--checkpoint", default=None, type=click.Path(exists=True))
+@click.option("--checkpoint", is_flag=True)
 @click.option("--progress", is_flag=True)
 def main(config_path, checkpoint, progress):
     config = toml.load(config_path)
@@ -115,7 +115,14 @@ def main(config_path, checkpoint, progress):
         else 2,
         enable_progress_bar=progress,
     )
-    trainer.fit(model, ckpt_path=checkpoint)
+
+    checkpoint_path = None
+    if checkpoint:
+        ckpts = sorted(save_folder.glob("*.ckpt"))
+        if len(ckpts) > 0:
+            checkpoint_path = ckpts[-1]
+
+    trainer.fit(model, ckpt_path=checkpoint_path)
     print("Done training")
 
     if not trainer.interrupted:

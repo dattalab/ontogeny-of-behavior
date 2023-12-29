@@ -1,5 +1,9 @@
 [paths]
 saving = '/n/groups/datta/win/longtogeny/size_norm/models/ae_augmentation_scan_00'
 
-[model.stage1]
+[stage1.augmentation]
+scale_low = { start = 0.1, stop = 0.6, step = 0.1 }
 
+[stage2.augmentation]
+# stop is a bit higher, since arange is non-inclusive
+scale_high = { start = 1.4, stop = 2.1, step = 0.1 }

@@ -60,11 +60,11 @@ max_frames = 6000
 patience = 70  # epochs
 
 [trainer]
-max_epochs = 100
+max_epochs = 200
 
 [model]
 depth = 4
-init_channel = 256
+init_channel = 64
 input_channel = 32
 init_depth = 1
 channel_scaling = 2
@@ -107,7 +107,7 @@ double_conv = true
 separable = true
 residual = true
 img_size = 80
-bottleneck = -1
+bottleneck = 25
 # new parameter
 dropout_p = 0.2
 
