@@ -139,4 +139,5 @@ def vae_loss(
     }
     total_loss = sum(loss_dict.values())
     loss_dict["total_loss"] = total_loss
+    loss_dict["mse_loss"] = torch.nn.functional.mse_loss(y_hat, y_true)
     return total_loss, loss_dict

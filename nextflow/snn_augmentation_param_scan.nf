@@ -4,6 +4,7 @@ def aging_env = "$HOME/miniconda3/envs/aging"
 params.config_file = "$HOME/code/ontogeny/configs/03-augmentation-scan.toml"
 params.stage = 1
 params.seed = 0
+params.stageList = "${params.stage}".tokenize(',') as List
 
 // tmp = '/some/path/to/file.txt'
 // println file(tmp).getParent() / 'model.pt'
@@ -48,8 +49,8 @@ process run_grid {
 
 // TODO: add a process to run age classifier or something
 workflow {
-    configs = create_grid(Channel.value(params.config_file), Channel.value(params.stage))
-    configs = configs.map { file(it.trim()).readLines()}
+    configs = create_grid(Channel.value(params.config_file), Channel.fromList(params.stageList))
+    configs = configs.map { file(it.trim()).readLines() }
         .flatten()
 
     run_grid(configs).view()
