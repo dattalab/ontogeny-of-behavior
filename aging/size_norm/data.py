@@ -32,7 +32,7 @@ class AugmentationParams:
     max_threshold_range: Tuple[int, int] = (40, 120)
 
     # morphological parameters
-    clean_prob: float = 0.2
+    clean_prob: float = 0.1
     tail_ksize_range: Tuple[int, int] = (3, 15)
     dilation_ksize_range: Tuple[int, int] = (3, 11)
     morph_height_thresh_range: Tuple[int, int] = (5, 25)
@@ -46,18 +46,18 @@ class AugmentationParams:
     # transform probabilities
     rotation_prob: float = 0.7
     translation_prob: float = 0.7
-    scale_prob: float = 0.7
-    shear_prob: float = 0.35
+    scale_prob: float = 0.6
+    shear_prob: float = 0.25
     threshold_prob: float = 0.05
     height_offset_prob: float = 0.5
-    height_scale_prob: float = 0.7
+    height_scale_prob: float = 0.5
     preserve_aspect_prob: float = 0.5
     white_noise_prob: float = 0.2
-    scaled_white_noise_prob: float = 0.35
+    scaled_white_noise_prob: float = 0.25
     flip_prob: float = 0.5
     zoom_unzoom_prob: float = 0.3
     random_elastic_prob: float = 0.2
-    tps_warp_prob: float = 0.35
+    tps_warp_prob: float = 0.65
     wall_reflection_prob: float = 0.15
 
     # random
@@ -238,8 +238,11 @@ class Augmenter:
     def __call__(self, data):
 
         # add white noise correlated with scaling
+        swnp = self.params.rng.random()
         if self.params.rng.random() < self.params.white_noise_prob:
-            data = white_noise(data, self.params)
+            # if I run this, don't run the scaled white noise section below
+            if swnp > self.params.scaled_white_noise_prob:
+                data = white_noise(data, self.params)
 
         if self.params.rng.random() < self.params.tps_warp_prob:
             data = age_dependent_tps_xform(data, self.tps_sampling_params, self.params.rng)
@@ -285,7 +288,9 @@ class Augmenter:
 
         # add scaled white noise
         if self.params.rng.random() < self.params.scaled_white_noise_prob:
-            data = scaled_white_noise(data, self.params)
+            # only run this if I didn't add the white noise above
+            if swnp < self.params.scaled_white_noise_prob:
+                data = scaled_white_noise(data, self.params)
 
         # min threshold
         if self.params.rng.random() < self.params.threshold_prob:
@@ -301,15 +306,13 @@ class Augmenter:
             data = augmentation_clean(data, self.params)
 
         # run height offset after thresholding
-        offset = (
-            torch.rand(len(data), *(1,) * (data.ndim - 1), device=data.device)
-            * (self.params.height[1] - self.params.height[0])
-            + self.params.height[0]
-        )
-        offset = (data > 0) * offset
         if self.params.rng.random() < self.params.height_offset_prob:
-            data = data + offset
-            data = torch.clamp_min(data, 0)
+            offset = (
+                torch.rand(len(data), *(1,) * (data.ndim - 1), device=data.device)
+                * (self.params.height[1] - self.params.height[0])
+                + self.params.height[0]
+            ) * (data > 0)
+            data = torch.clamp_min(data + offset, 0)
 
         return normalize(data)
 
