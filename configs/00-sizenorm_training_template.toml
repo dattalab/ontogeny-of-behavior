@@ -8,8 +8,8 @@ saving='/n/groups/datta/win/longtogeny/size_norm/models/pre_final_model-2023-09-
 
 [augmentation]
 angle_range = [-65, 65]
-scale_x = [0.45, 1.55]
-scale_y = [0.45, 1.55]
+scale_x = [0.25, 2.0]
+scale_y = [0.25, 2.0]
 scale_z = [0.7, 1.3]
 translate_x = [-0.2, 0.2]  # proportional
 translate_y = [-0.3, 0.3]  # proportional
@@ -18,7 +18,7 @@ white_noise_scale = 3
 min_threshold_range = [1, 17]
 max_threshold_range = [50, 120]
 
-clean_prob = 0.125
+clean_prob = 0.1
 tail_ksize_range = [3, 15]
 dilation_ksize_range = [3, 11]
 morph_height_thresh_range = [5, 25]
@@ -31,17 +31,18 @@ elastic_flag = true
 
 rotation_prob = 0.7
 translation_prob = 0.7
-scale_prob = 0.9
-threshold_prob = 0.3
-height_offset_prob = 0.7
-height_scale_prob = 0.7
+scale_prob = 0.7
+threshold_prob = 0.05
+height_offset_prob = 0.6
+height_scale_prob = 0.6
 preserve_aspect_prob = 0.6
 white_noise_prob = 0.2
-scaled_white_noise_prob = 0.35
+scaled_white_noise_prob = 0.25
 flip_prob = 0.5
 random_elastic_prob = 0.2
-tps_warp_prob = 0.35
+tps_warp_prob = 0.65
 wall_reflection_prob = 0.15
+zoom_unzoom_prob = 0.2
 
 seed = 0
 
