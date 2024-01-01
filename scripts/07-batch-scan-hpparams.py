@@ -29,12 +29,17 @@ def parse_parameter_name(name: str, template: dict):
     return apply_keys, bound
 
 
-def set_ranged_value(value, bound, template_value):
-    """Set the appropriate value from within the template guided by the bound"""
+def clean_value(value):
     if isinstance(value, np.float_):
         value = float(value)
     elif isinstance(value, np.int_):
         value = int(value)
+    return value
+
+
+def set_ranged_value(value, bound, template_value):
+    """Set the appropriate value from within the template guided by the bound"""
+    value = clean_value(value)
     if bound == "low":
         return [value, template_value[1]]
     elif bound == "high":
@@ -61,13 +66,13 @@ def transform_parameter(values):
             )
         elif "step" in values:
             arr_fun = np.arange
-        return arr_fun(**val_fun(values))
+        return list(map(clean_value, arr_fun(**val_fun(values))))
     elif isinstance(values, (int, float)):
         return [values]
 
 
 def generate_parameter_space(config: dict):
-    # top level is parameter container (i.e., augmentation, model, etc.)
+    # top level is parameter group (i.e., augmentation, model, etc.)
     space = {}
     for container, params in config.items():
         agg = valmap(transform_parameter, params)

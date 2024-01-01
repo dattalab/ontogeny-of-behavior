@@ -23,7 +23,7 @@ process create_grid {
 
     script:
     """
-    python $HOME/code/ontogeny/scripts/07-batch-scan-augmentation-hpparams.py \
+    python $HOME/code/ontogeny/scripts/07-batch-scan-hpparams.py \
     $HOME/code/ontogeny/configs/00-sizenorm_training_template.toml \
     $config_file --stage $stage --reset-run --seed $params.seed
     """
@@ -32,7 +32,7 @@ process create_grid {
 process run_grid {
     label 'gpu'
     memory 20.GB
-    time 3.h
+    time { 3.h + (task.attempt - 1) * 30.m }
     conda aging_env
 
     input:

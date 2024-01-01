@@ -14,6 +14,7 @@ from IPython.display import display
 from lightning.pytorch import Callback
 from torchvision.utils import make_grid
 from torch.utils.data import DataLoader, RandomSampler
+from aging import organization
 from aging.size_norm.data import (
     AugmentationParams,
     Session,
@@ -224,6 +225,7 @@ class SizeNormModel(pl.LightningModule):
         use_l2_regularization_sn: bool = False,
         l2_regularization_sn_alpha: float = 1e-6,
         vae_loss_params=dict(),
+        tps_training_paths=organization.paths.TrainingPaths(),
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -235,7 +237,7 @@ class SizeNormModel(pl.LightningModule):
         self.scaling_fun = exponential_scaling(**adversarial_age_scaling)
 
         self.model = model(**model_params).to(device)
-        self.augment = Augmenter(aug_params, paths.wall_noise)
+        self.augment = Augmenter(aug_params, paths.wall_noise, tps_training_paths.tps_multivariate_t_params)
 
         self.loss_fun = (
             F.mse_loss

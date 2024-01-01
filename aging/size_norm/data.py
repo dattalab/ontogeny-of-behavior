@@ -12,6 +12,7 @@ from torch.utils.data import Dataset
 from kornia import augmentation, morphology
 from toolz import valfilter
 from functools import cache
+from scipy.stats import multivariate_t
 from sklearn.preprocessing import LabelEncoder
 from kornia.geometry.transform import get_tps_transform, warp_image_tps, resize, scale
 
@@ -47,7 +48,7 @@ class AugmentationParams:
     translation_prob: float = 0.7
     scale_prob: float = 0.7
     shear_prob: float = 0.35
-    threshold_prob: float = 0.3
+    threshold_prob: float = 0.05
     height_offset_prob: float = 0.5
     height_scale_prob: float = 0.7
     preserve_aspect_prob: float = 0.5
@@ -61,10 +62,6 @@ class AugmentationParams:
 
     # random
     rng: random.Random = random.Random(0)
-
-    # training data paths
-    neutral_pose_warping_path: str = "/n/groups/datta/win/longtogeny/data/size_network/training_data/baseline-target-warp-points.p"
-    rear_pose_warping_path: str = "/n/groups/datta/win/longtogeny/data/size_network/training_data/baseline-target-warp-points-rears.p"
 
 
 @dataclass
@@ -100,35 +97,6 @@ def add_reflection(img, wall):
     return img + wall
 
 
-def create_tps_kernels(source, target):
-    source = (source / 80.0) - 0.5
-    target = (target / 80.0) - 0.5
-    return source, *get_tps_transform(target, source)
-
-
-def load_tps_points(path) -> dict:
-    points = joblib.load(path)
-    return points
-
-
-def select_tps_points(points, n, rng=None, device=torch.device("cpu")):
-    if rng is None:
-        rng = random
-    # first, select random dict entry
-    val = rng.choice(list(points.values()))
-    # next, select a warping from list
-    source, target = rng.choice(val)
-    source = torch.tensor(source, dtype=torch.float32, device=device)
-    target = torch.tensor(target, dtype=torch.float32, device=device)
-    # expand source, kernel, affine, to batch size n
-    source = source.expand(n, *source.shape)
-    target = target.expand(n, *target.shape)
-    # add some jitter to the target points
-    target = target + torch.randn_like(target) * 0.1
-    source, kernel, affine = create_tps_kernels(source, target)
-    return source, kernel, affine
-
-
 def clean(frame, tail_ksize=11, height_thresh=12, dilate=True, dilation_ksize=3):
     tailfilter = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (tail_ksize,) * 2)
     mask = cv2.morphologyEx(
@@ -148,6 +116,57 @@ def zoom_unzoom(frame: torch.Tensor, rng, scale_range) -> torch.Tensor:
     scaled_frame = scale(frame, scale_factor)
     unscaled_frame = scale(scaled_frame, 1 / scale_factor)
     return unscaled_frame
+
+
+def pad_vector(v):
+    return torch.nn.functional.pad(v, (1, 1, 1, 1), value=0)
+
+
+@cache
+def make_grid(grid_size=6, batch_size=1, device=torch.device("cpu")):
+    grid = torch.meshgrid(
+        torch.linspace(-0.5, 0.5, grid_size),
+        torch.linspace(-0.5, 0.5, grid_size),
+        indexing="ij",
+    )
+    grid = torch.stack(grid, dim=-1).reshape(1, -1, 2).repeat(batch_size, 1, 1)
+    return grid.to(device)
+
+
+def sample_size_changes(parameters: dict, random_state: random.RandomState):
+    age_params = random_state.choice(list(parameters.values()))
+    tps_sampler = multivariate_t(*age_params['tps'])
+    height_sampler = multivariate_t(*age_params['height'])
+    scale_sampler = multivariate_t(*age_params['scale'])
+
+    tps = tps_sampler.rvs(random_state=random_state)
+    tps = tps.reshape(2, 4, 4)
+    tps = pad_vector(torch.tensor(tps, dtype=torch.float32))
+
+    height = np.clip(height_sampler.rvs(random_state=random_state), 0, None)
+    height = torch.tensor(height.reshape(-1, 8), dtype=torch.float32)
+
+    scale = scale_sampler.rvs(random_state=random_state)
+    scale = torch.tensor(scale.reshape(-1, 2), dtype=torch.float32)
+
+    return tps, height, scale
+
+
+def age_dependent_tps_xform(frames, parameters: dict, random_state: random.RandomState):
+    samples = [sample_size_changes(parameters, random_state) for _ in range(len(frames))]
+    tps_vector, height, scale = zip(*samples)
+    tps_vector = torch.transpose(torch.stack(tps_vector), 1, 3).to(frames.device)
+
+    grid = make_grid(tps_vector.shape[1], len(frames), device=frames.device)
+
+    kernel, affine = get_tps_transform(grid + tps_vector.reshape(len(frames), -1, 2), grid)
+    scaled_frames = scale(frames, torch.cat(scale, dim=0))
+    transformed_frames = warp_image_tps(scaled_frames, grid, kernel, affine)
+
+    height_intermediate = resize(torch.stack(height), frames.shape[-2:])
+
+    out = transformed_frames * height_intermediate
+    return out
 
 
 @cache
@@ -180,7 +199,7 @@ def augmentation_clean(frames, params: AugmentationParams):
 
 # --- augmentation pipeline ---
 class Augmenter:
-    def __init__(self, params: AugmentationParams, wall_noise_path):
+    def __init__(self, params: AugmentationParams, wall_noise_path, tps_sampler_path):
         self.params = params
         self.rotate = augmentation.RandomRotation(
             params.angle_range, p=params.rotation_prob
@@ -214,7 +233,7 @@ class Augmenter:
             p=params.random_elastic_prob,
         )
 
-        self.warp_pts = load_tps_points(params.neutral_pose_warping_path)
+        self.tps_sampling_params = joblib.load(tps_sampler_path)
 
     def __call__(self, data):
 
@@ -223,8 +242,7 @@ class Augmenter:
             data = white_noise(data, self.params)
 
         if self.params.rng.random() < self.params.tps_warp_prob:
-            params = select_tps_points(self.warp_pts, len(data), rng=self.params.rng, device=data.device)
-            data = warp_image_tps(data, *params)
+            data = age_dependent_tps_xform(data, self.tps_sampling_params, self.params.rng)
 
         ### affine transforms ###
         if self.params.rng.random() < self.params.preserve_aspect_prob:

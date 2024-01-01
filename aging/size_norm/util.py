@@ -17,7 +17,7 @@ def get_mag(s):
         raise NotImplementedError()
 
 
-def load_model_parameters(files: list[Path]):
+def load_model_parameters(files: list[Path], debug=False):
     results = []
     for f in files:
         try:
@@ -25,11 +25,15 @@ def load_model_parameters(files: list[Path]):
             config = toml.load(folder / "config.toml")
             mse_df = pd.read_csv(f)
             tmp = mse_df.groupby('epoch').mean()
-            with open(list(folder.glob('model*.out'))[0], 'r') as out_f:
-                for line in out_f.readlines():
-                    if "Total params" in line:
-                        params = line.split(' ')[:2]
-                        params = float(params[0]) * get_mag(params[1])
+            out_files = list(folder.glob('model*.out'))
+            if len(out_files) > 0:
+                with open(out_files[0], 'r') as out_f:
+                    for line in out_f.readlines():
+                        if "Total params" in line:
+                            params = line.split(' ')[:2]
+                            params = float(params[0]) * get_mag(params[1])
+            else:
+                params = np.nan
             arch = config['model']['lightning']['arch']
             out = dict(
                 depth=config['model']['depth'],
@@ -44,20 +48,23 @@ def load_model_parameters(files: list[Path]):
                 init_depth=config['model']['init_depth'],
                 init_channel=config['model']['init_channel'],
                 val_mse=None if 'val_loss' not in mse_df.columns else mse_df['val_loss'].min(),
+                vae_val_mse=None if 'val_mse_loss' not in mse_df.columns else mse_df['val_mse_loss'].min(),
                 uuid=folder.name,
-                train_mse=tmp['train_loss'].min(),
+                train_mse=None if 'train_loss' not in mse_df.columns else tmp['train_loss'].min(),
                 epoch=mse_df['epoch'].max(),
                 param_count=params,
                 file=str(folder / "model.pt"),
                 activation=config['model']['activation'],
+                bottleneck=get_in(['model', arch, 'bottleneck'], config, None),
             )
             if 'dynamics_correlation' in mse_df.columns:
                 out['dynamics_corr'] = mse_df['dynamics_correlation'].dropna().iloc[-1]
             if 'age_classification' in mse_df.columns:
                 out['age_class'] = mse_df['age_classification'].dropna().iloc[-1]
             results.append(out)
-        except Exception:
-            continue
+        except Exception as e:
+            if debug:
+                print(e)
     results = pd.DataFrame(results)
     return results
 

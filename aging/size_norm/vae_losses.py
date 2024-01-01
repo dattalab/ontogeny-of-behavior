@@ -125,8 +125,9 @@ def _gaussian_log_density_unsummed_std_normal(z):
     return -0.5 * (diff_sq + LN2PI)
 
 
+# NOTE: gauss_std is tuned to match camera noise
 def vae_loss(
-    y_hat, y_true, beta=5, kl_factor=1, gauss_std=0.075
+    y_hat, y_true, beta=5, kl_factor=1, gauss_std=0.0175
 ) -> tuple[torch.Tensor, dict]:
     y_hat, sample, mu, logvar = y_hat
     index_code_mi, total_corr, dim_wise_kl = decomposed_kl(sample, mu, logvar)
