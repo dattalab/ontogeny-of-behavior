@@ -9,6 +9,16 @@ bottleneck = [5, 9, 25, 50]
 
 [stage2.model]
 arch = ['vae']
+use_curriculum_learning = [false, true]
+init_channel = [128]
+bottleneck = [25]
+double_conv = [true]
+
+
+[stage3.model]
+arch = ['vae']
 init_channel = [128, 256, 512]
 double_conv = [true]
 bottleneck = [25]
+
+
