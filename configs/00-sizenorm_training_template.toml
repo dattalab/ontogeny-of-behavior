@@ -55,10 +55,10 @@ log_interval = 1000  # epochs
 max_frames = 6000
 
 [callbacks.stopping]
-patience = 70  # epochs
+patience = 250  # epochs
 
 [trainer]
-max_epochs = 200
+max_epochs = 250
 
 [model]
 depth = 4
@@ -87,7 +87,7 @@ l2_regularization_sn_alpha = 5e-4
 use_curriculum_learning = false
 
 [model.lightning.lr_scheduler_params]
-patience = 50
+patience = 200
 
 # scaling magnitude of age-based adversarial loss
 [model.lightning.adversarial_age_scaling]

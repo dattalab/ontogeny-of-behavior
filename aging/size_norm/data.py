@@ -454,7 +454,11 @@ class CurriculumPipeline:
 
     def __call__(self, data: torch.Tensor, step_num: int):
         for (func, block_num) in self.pipeline:
-            block = min(max(step_num // x for x in self.transitions), 3)
+            block_frac = np.array([step_num // x for x in self.transitions])
+            if np.all(block_frac == 0):
+                block = 0
+            else:
+                block = np.max(np.where(block_frac > 0)[0]) + 1
             if block >= block_num:
                 data = func(data, self.rng, step_num)
         return normalize(data)

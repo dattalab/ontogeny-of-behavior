@@ -241,8 +241,8 @@ class SizeNormModel(pl.LightningModule):
         self.model = model(**model_params).to(device)
         if use_curriculum_learning:
             # TODO: don't hard-code this
-            block_size = 1.15e4
-            self.augment = CurriculumPipeline(8e-4, aug_params, [block_size * i for i in range(1, 4)])
+            blocks = [2500, 10000, 11500, 13500]
+            self.augment = CurriculumPipeline(1e-4, aug_params, blocks)
         else:
             self.augment = Augmenter(aug_params, paths.wall_noise, tps_training_paths.tps_multivariate_t_params)
 
