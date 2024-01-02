@@ -430,7 +430,6 @@ class CurriculumPipeline:
     def __init__(self, rate: float, params: AugmentationParams, block_transitions: list | tuple):
         '''block_transitions: list of step numbers at which to transition to the next block'''
         self.transitions = np.array(block_transitions)
-        self.block = 0
         self.rng = params.rng
         self.pipeline = [
             (CurriculumAugmentation(identity_fun, 1, 1, params), 0),
@@ -455,11 +454,8 @@ class CurriculumPipeline:
 
     def __call__(self, data: torch.Tensor, step_num: int):
         for (func, block_num) in self.pipeline:
-            block = np.where(self.transitions <= step_num)[0]
-            if len(block) == 0:
-                block = [len(self.transitions)]
-            self.block = block[-1]
-            if self.block >= block_num:
+            block = min(max(step_num // x for x in self.transitions), 3)
+            if block >= block_num:
                 data = func(data, self.rng, step_num)
         return normalize(data)
 

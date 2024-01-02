@@ -32,7 +32,8 @@ process create_grid {
 process run_grid {
     label 'gpu'
     memory 20.GB
-    time { 3.h + (task.attempt - 1) * 30.m }
+    time { 3.h + (task.attempt - 1) * 2.h }
+    maxRetries 3
     conda aging_env
 
     input:
