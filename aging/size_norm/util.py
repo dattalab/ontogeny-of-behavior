@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from sklearn.decomposition import PCA
-from toolz import get_in, valmap, groupby, assoc, compose
+from toolz import get_in, valmap, groupby, compose
 
 
 def get_mag(s):
@@ -56,6 +56,7 @@ def load_model_parameters(files: list[Path], debug=False):
                 file=str(folder / "model.pt"),
                 activation=config['model']['activation'],
                 bottleneck=get_in(['model', arch, 'bottleneck'], config, None),
+                curriculum_learning=get_in(['model', 'lightning', 'use_curriculum_learning'], config, False),
             )
             if 'dynamics_correlation' in mse_df.columns:
                 out['dynamics_corr'] = mse_df['dynamics_correlation'].dropna().iloc[-1]

@@ -24,6 +24,7 @@ from aging.size_norm.data import (
     unnormalize,
     AgeClassifierDataset,
     ConcatDataset,
+    CurriculumPipeline
 )
 from aging.size_norm.models import Autoencoder, LogisticRegression, Regression
 from aging.size_norm.test import classify_age, dynamics_correlation
@@ -226,6 +227,7 @@ class SizeNormModel(pl.LightningModule):
         l2_regularization_sn_alpha: float = 1e-6,
         vae_loss_params=dict(),
         tps_training_paths=organization.paths.TrainingPaths(),
+        use_curriculum_learning: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -237,7 +239,12 @@ class SizeNormModel(pl.LightningModule):
         self.scaling_fun = exponential_scaling(**adversarial_age_scaling)
 
         self.model = model(**model_params).to(device)
-        self.augment = Augmenter(aug_params, paths.wall_noise, tps_training_paths.tps_multivariate_t_params)
+        if use_curriculum_learning:
+            # TODO: don't hard-code this
+            block_size = 1.15e4
+            self.augment = CurriculumPipeline(8e-4, aug_params, [block_size * i for i in range(1, 4)])
+        else:
+            self.augment = Augmenter(aug_params, paths.wall_noise, tps_training_paths.tps_multivariate_t_params)
 
         self.loss_fun = (
             F.mse_loss
@@ -281,10 +288,16 @@ class SizeNormModel(pl.LightningModule):
         if self.trainer.training or self.trainer.validating:
             if self.hparams.train_adversarial and self.trainer.training:
                 (frames, target) = x
-                frames = self.augment(frames)
+                if self.hparams.use_curriculum_learning:
+                    frames = self.augment(frames, self.global_step)
+                else:
+                    frames = self.augment(frames)
                 x = (frames, target)
             else:
-                x = self.augment(x)
+                if self.hparams.use_curriculum_learning:
+                    x = self.augment(x, self.global_step)
+                else:
+                    x = self.augment(x)
         return x, y
 
     def train_classifier(self, frames, y, opt):
