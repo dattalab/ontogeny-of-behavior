@@ -6,7 +6,7 @@ import random
 import joblib
 import numpy as np
 from pathlib import Path
-from typing import Tuple, Union
+from typing import Callable, Tuple, Union
 from dataclasses import dataclass
 from torch.utils.data import Dataset
 from kornia import augmentation, morphology
@@ -24,8 +24,8 @@ class AugmentationParams:
     scale_y: Tuple[float, float] = (0.5, 1.85)
     scale_z: Tuple[float, float] = (0.8, 1.2)
     shear_angles: Tuple[int, int, int, int] = (-15, 15, -15, 15)
-    translate_x: Tuple[float, float] = (-0.2, 0.2)
-    translate_y: Tuple[float, float] = (-0.3, 0.3)
+    translate_x: float = 0.2
+    translate_y: float = 0.3
     height: Tuple[int, int] = (-5, 5)
     white_noise_scale: float = 5  # mm
     min_threshold_range: Tuple[int, int] = (1, 20)
@@ -62,6 +62,10 @@ class AugmentationParams:
 
     # random
     rng: random.Random = random.Random(0)
+
+    # paths
+    wall_noise_path: str = '/n/groups/datta/win/longtogeny/data/size_network/training_data/wall_noise.h5'
+    tps_sampler_path: str = '/n/groups/datta/win/longtogeny/size_norm/training_data/tps_multivariate_t_params.p.gz'
 
 
 @dataclass
@@ -110,7 +114,9 @@ def clean(frame, tail_ksize=11, height_thresh=12, dilate=True, dilation_ksize=3)
     return frame * mask
 
 
-def zoom_unzoom(frame: torch.Tensor, rng, scale_range) -> torch.Tensor:
+def zoom_unzoom(frame: torch.Tensor, params: AugmentationParams) -> torch.Tensor:
+    rng = params.rng
+    scale_range = params.scale_x
     scale_factor = rng.uniform(*scale_range)
     scale_factor = torch.ones((len(frame), 2), device=frame.device) * scale_factor
     scaled_frame = scale(frame, scale_factor)
@@ -133,37 +139,39 @@ def make_grid(grid_size=6, batch_size=1, device=torch.device("cpu")):
     return grid.to(device)
 
 
-def sample_size_changes(parameters: dict, random_state: random.RandomState):
-    age_params = random_state.choice(list(parameters.values()))
-    tps_sampler = multivariate_t(*age_params['tps'])
-    height_sampler = multivariate_t(*age_params['height'])
-    scale_sampler = multivariate_t(*age_params['scale'])
+def sample_size_changes(parameters: dict, random_state: random.Random):
+    age = random_state.choice(list(parameters['tps']))
+    tps_sampler = multivariate_t(*parameters['tps'][age])
+    # NOTE: not sure if this is ok yet
+    height_sampler = multivariate_t(*parameters['height'][age], allow_singular=True)
+    scale_sampler = multivariate_t(*parameters['scale'][age])
 
-    tps = tps_sampler.rvs(random_state=random_state)
+    state = random_state.getstate()[1][0]
+    tps = tps_sampler.rvs(random_state=state)
     tps = tps.reshape(2, 4, 4)
     tps = pad_vector(torch.tensor(tps, dtype=torch.float32))
 
-    height = np.clip(height_sampler.rvs(random_state=random_state), 0, None)
+    height = np.clip(height_sampler.rvs(random_state=state), 0, None)
     height = torch.tensor(height.reshape(-1, 8), dtype=torch.float32)
 
-    scale = scale_sampler.rvs(random_state=random_state)
+    scale = scale_sampler.rvs(random_state=state)
     scale = torch.tensor(scale.reshape(-1, 2), dtype=torch.float32)
 
     return tps, height, scale
 
 
-def age_dependent_tps_xform(frames, parameters: dict, random_state: random.RandomState):
+def age_dependent_tps_xform(frames, parameters: dict, random_state: random.Random):
     samples = [sample_size_changes(parameters, random_state) for _ in range(len(frames))]
-    tps_vector, height, scale = zip(*samples)
+    tps_vector, height, scale_params = zip(*samples)
     tps_vector = torch.transpose(torch.stack(tps_vector), 1, 3).to(frames.device)
 
     grid = make_grid(tps_vector.shape[1], len(frames), device=frames.device)
 
     kernel, affine = get_tps_transform(grid + tps_vector.reshape(len(frames), -1, 2), grid)
-    scaled_frames = scale(frames, torch.cat(scale, dim=0))
-    transformed_frames = warp_image_tps(scaled_frames, grid, kernel, affine)
+    scaled_frames = scale(frames, torch.cat(scale_params, dim=0).to(frames.device))
+    transformed_frames = warp_image_tps(scaled_frames, grid.to(frames.device), kernel.to(frames.device), affine.to(frames.device))
 
-    height_intermediate = resize(torch.stack(height), frames.shape[-2:])
+    height_intermediate = resize(torch.stack(height).unsqueeze(1).to(frames.device), frames.shape[-2:])
 
     out = transformed_frames * height_intermediate
     return out
@@ -207,7 +215,7 @@ class Augmenter:
         self.flip = augmentation.RandomRotation([179, 181], p=params.flip_prob)
         self.translate = augmentation.RandomAffine(
             degrees=0,
-            translate=(params.translate_x[1], params.translate_y[1]),
+            translate=(params.translate_x, params.translate_y),
             p=params.translation_prob,
         )
         self.scale = augmentation.RandomAffine(
@@ -273,7 +281,7 @@ class Augmenter:
 
         # shrink then re-expand to simulate data loss and changes in noise scaling
         if self.params.rng.random() < self.params.zoom_unzoom_prob:
-            data = zoom_unzoom(data, self.params.rng, self.params.scale_x)
+            data = zoom_unzoom(data, self.params)
 
         # add wall noise
         if self.params.rng.random() < self.params.wall_reflection_prob:
@@ -287,10 +295,9 @@ class Augmenter:
             data = white_noise(data, self.params)
 
         # add scaled white noise
-        if self.params.rng.random() < self.params.scaled_white_noise_prob:
+        if swnp < self.params.scaled_white_noise_prob:
             # only run this if I didn't add the white noise above
-            if swnp < self.params.scaled_white_noise_prob:
-                data = scaled_white_noise(data, self.params)
+            data = scaled_white_noise(data, self.params)
 
         # min threshold
         if self.params.rng.random() < self.params.threshold_prob:
@@ -315,6 +322,162 @@ class Augmenter:
             data = torch.clamp_min(data + offset, 0)
 
         return normalize(data)
+
+
+def tps_sampler_factory(tps_sampler_path):
+    tps_sampling_params = joblib.load(tps_sampler_path)
+
+    def tps_sampler(data, params: AugmentationParams):
+        return age_dependent_tps_xform(data, tps_sampling_params, params.rng)
+
+    return tps_sampler
+
+
+def shear_fun(data, params: AugmentationParams):
+    shear = augmentation.RandomShear(params.shear_angles, p=1.0)
+    return shear(data)
+
+
+def height_scale_fun(data, params: AugmentationParams):
+    height_scale = (
+        torch.rand(len(data), *(1,) * (data.ndim - 1), device=data.device)
+        * (params.scale_z[1] - params.scale_z[0])
+        + params.scale_z[0]
+    )
+    return data * height_scale
+
+
+def elastic_fun(data, params: AugmentationParams):
+    elastic = augmentation.RandomElasticTransform(
+        kernel_size=(params.elastic_ksize,) * 2,
+        alpha=(params.elastic_alpha,) * 2,
+        sigma=(params.elastic_sigma,) * 2,
+        p=1.0,
+    )
+    return elastic(data)
+
+
+def wall_noise_factory(wall_noise_path):
+    with h5py.File(wall_noise_path, "r") as f:
+        wall_noise = torch.tensor(f["wall_frames"][()], dtype=torch.float32)
+
+    def add_wall_noise(data, params: AugmentationParams):
+        inds = params.rng.choices(range(len(wall_noise)), k=len(data))
+        return add_reflection(
+            data, wall_noise[inds].to(data.device).unsqueeze(1)
+        )
+
+    return add_wall_noise
+
+
+def min_height_thresholding_fun(data, params: AugmentationParams):
+    threshold = params.rng.uniform(*params.min_threshold_range)
+    data[data < threshold] = 0
+    return data
+
+
+def max_height_thresholding_fun(data, params: AugmentationParams):
+    threshold = params.rng.uniform(*params.max_threshold_range)
+    return torch.clamp_max(data, threshold)
+
+
+def height_offset_fun(data, params: AugmentationParams):
+    offset = (
+        torch.rand(len(data), *(1,) * (data.ndim - 1), device=data.device)
+        * (params.height[1] - params.height[0])
+        + params.height[0]
+    ) * (data > 0)
+    return torch.clamp_min(data + offset, 0)
+
+
+def rotation_fun(data, params: AugmentationParams):
+    rotate = augmentation.RandomRotation(params.angle_range, p=1.0)
+    return rotate(data)
+
+
+def translate_fun(data, params: AugmentationParams):
+    translate = augmentation.RandomAffine(
+        degrees=0, translate=(params.translate_x, params.translate_y), p=1.0
+    )
+    return translate(data)
+
+
+def flip_fun(data, params: AugmentationParams):
+    flp = augmentation.RandomRotation([179, 181], p=1.0)
+    data = flp(data)
+    return data
+
+
+def identity_fun(data, params: AugmentationParams):
+    return data
+
+
+def scale_fun(data, params: AugmentationParams):
+    scale = augmentation.RandomAffine(
+        degrees=0, scale=params.scale_x + params.scale_y, p=1.0
+    )
+    iso_scale = augmentation.RandomAffine(
+        degrees=0,
+        scale=(min(params.scale_x + params.scale_y), max(params.scale_x + params.scale_y)),
+        p=1.0,
+    )
+    if params.rng.random() < params.preserve_aspect_prob:
+        return iso_scale(data)
+    return scale(data)
+
+
+class CurriculumPipeline:
+    def __init__(self, rate: float, params: AugmentationParams, block_transitions: list | tuple):
+        '''block_transitions: list of step numbers at which to transition to the next block'''
+        self.transitions = np.array(block_transitions)
+        self.block = 0
+        self.rng = params.rng
+        self.pipeline = [
+            (CurriculumAugmentation(identity_fun, 1, 1, params), 0),
+            (CurriculumAugmentation(white_noise, params.white_noise_prob, rate, params), 1),
+            (CurriculumAugmentation(tps_sampler_factory(params.tps_sampler_path), params.tps_warp_prob, rate, params), 3),
+            (CurriculumAugmentation(scale_fun, params.scale_prob, rate, params), 1),
+            (CurriculumAugmentation(rotation_fun, params.rotation_prob, rate, params), 1),
+            (CurriculumAugmentation(translate_fun, params.translation_prob, rate, params), 1),
+            (CurriculumAugmentation(shear_fun, params.shear_prob, rate, params), 1),
+            (CurriculumAugmentation(height_scale_fun, params.height_scale_prob, rate, params), 1),
+            (CurriculumAugmentation(flip_fun, params.flip_prob, rate, params), 1),
+            (CurriculumAugmentation(elastic_fun, params.random_elastic_prob, rate, params), 2),
+            (CurriculumAugmentation(zoom_unzoom, params.zoom_unzoom_prob, rate, params), 2),
+            (CurriculumAugmentation(wall_noise_factory(params.wall_noise_path), params.wall_reflection_prob, rate, params), 2),
+            (CurriculumAugmentation(white_noise, params.white_noise_prob, rate, params), 1),
+            (CurriculumAugmentation(scaled_white_noise, params.scaled_white_noise_prob, rate, params), 1),
+            (CurriculumAugmentation(min_height_thresholding_fun, params.threshold_prob, rate, params), 2),
+            (CurriculumAugmentation(max_height_thresholding_fun, params.threshold_prob, rate, params), 2),
+            (CurriculumAugmentation(augmentation_clean, params.clean_prob, rate, params), 2),
+            (CurriculumAugmentation(height_offset_fun, params.height_offset_prob, rate, params), 2),
+        ]
+
+    def __call__(self, data: torch.Tensor, step_num: int):
+        for (func, block_num) in self.pipeline:
+            block = np.where(self.transitions <= step_num)[0]
+            if len(block) == 0:
+                block = [len(self.transitions)]
+            self.block = block[-1]
+            if self.block >= block_num:
+                data = func(data, self.rng, step_num)
+        return normalize(data)
+
+
+class CurriculumAugmentation:
+    def __init__(self, function: Callable, p: float, rate: float, params: AugmentationParams):
+        self.fun = function
+        self.p = p
+        self.params = params
+        self.init_step = None
+        self.rate = rate
+
+    def __call__(self, data: torch.Tensor, random_state: random.Random, step_num: int):
+        if self.init_step is None:
+            self.init_step = step_num
+        if random_state.random() < min(self.p, (step_num - self.init_step) * self.rate * self.p):
+            return self.fun(data, self.params)
+        return data
 
 
 # --- dataset pipeline --- #
