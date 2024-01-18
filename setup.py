@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
     name="aging",
     version="0.0.1",
-    author="Dana Rubi Levy, Rockwell Anyoha, Winthrop Gillis",
+    author="Winthrop Gillis, Dana Rubi Levy, Rockwell Anyoha",
     author_email="win.gillis@gmail.com",
     packages=find_packages(),
     python_requires=">3.7",

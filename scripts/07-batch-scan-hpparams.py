@@ -4,6 +4,7 @@ import click
 import shutil
 import numpy as np
 from pathlib import Path
+from itertools import product
 from toolz import dissoc, first, merge, valmap
 from sklearn.model_selection import ParameterGrid
 
@@ -123,7 +124,7 @@ def update_model_dict(item, modification_dict, debug=False):
 @click.command()
 @click.argument("template_path", type=click.Path(exists=True))
 @click.argument("parameter_space_path", type=click.Path(exists=True))
-@click.option("--seed", default=0)
+@click.option("--seed", default="0", type=str)
 @click.option("--stage", default=1, type=int)
 @click.option("--dry-run", is_flag=True)
 @click.option("--reset-run", is_flag=True)
@@ -140,7 +141,6 @@ def main(template_path, parameter_space_path, seed, stage, dry_run, reset_run, d
     if save_path.exists() and reset_run:
         shutil.rmtree(save_path)
 
-    template["augmentation"]["seed"] = seed
 
     # for this version, should only contain augmentation parameters
     parameter_config = config[f"stage{stage}"]
@@ -160,7 +160,8 @@ def main(template_path, parameter_space_path, seed, stage, dry_run, reset_run, d
     modification_dict = template[parameter_group].copy()
     # augmentation_dict = template["augmentation"]
     new_config_files = []
-    for item in grid:
+    for _seed, item in product(seed.split(","), grid):
+        template["augmentation"]["seed"] = int(_seed)
         if parameter_group == "augmentation":
             new_param_dict = update_augmentation_dict(item, modification_dict, debug)
         elif parameter_group == "model":

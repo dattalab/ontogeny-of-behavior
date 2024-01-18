@@ -44,13 +44,14 @@ def create_uuid_map(folders, syllable_path, experiment) -> dict:
     return uuid_map
 
 
-def ontogeny_age_map_fun(age: str) -> int:
+def ontogeny_age_map_fun(age: str, is_female: bool = False) -> int:
     """Parses a string with age written in either week or month form, and
     converts it to week form."""
     try:
         return int(age.split("w")[0])
     except ValueError:
-        return {"3": 12, "6": 24, "9": 35, "12": 52, "18": 78, "22": 90}[
+        female_flag_age = 72 if is_female else 78
+        return {"3": 12, "6": 24, "9": 36, "12": 52, "18": female_flag_age, "22": 90}[
             age.split("m")[0]
         ]
 
@@ -85,7 +86,7 @@ def get_age(path: Path) -> int | float:
     experiment = get_experiment(path)
 
     if "ontogeny" in experiment:
-        age = ontogeny_age_map_fun(path.parents[2].name.split("_")[0])
+        age = ontogeny_age_map_fun(path.parents[2].name.split("_")[0], 'female' in experiment)
     elif "longtogeny_v2" in experiment:
         age = longtogeny_age_map_fun(parse_date(path), v2=True)
     elif "longtogeny_males" == experiment:
@@ -116,11 +117,13 @@ def get_experiment(path: Path):
     elif "Epig" in str_path:
         exp = "epigenetic_clock"
     elif "longtogeny" in str_path:
-        sex = path.parents[3].name.lower()
-        if sex not in ("males", "females"):
-            sex = path.parents[2].name.lower()
-            if sex not in ("males", "females"):
+        def _get_sex(path, depth):
+            if depth < 0:
                 raise ValueError("bleh")
+            elif path.parents[depth].name.lower() not in ("males", "females"):
+                return _get_sex(path, depth - 1)
+            return path.parents[depth].name.lower()
+        sex = _get_sex(path, 3)
         exp = f"longtogeny_{sex}"
     elif "Dana_ontogeny" in str_path:
         exp = f"dana_ontogeny_{path.parents[3].name.lower()}"
@@ -211,7 +214,7 @@ def determine_timestamp_scale(timestamps, fps=30):
     return min(scale_map, key=scale_map.get)
 
 
-def extract_scalars(path: Path, recon_key, rescaled_key):
+def extract_scalars(path: Path, recon_key):
     try:
         with h5py.File(path, "r") as f:
             session_name = f["metadata/acquisition/SessionName"][()].decode()

@@ -429,7 +429,7 @@ def scale_fun(data, params: AugmentationParams):
 class CurriculumPipeline:
     def __init__(self, rate: float, params: AugmentationParams, block_transitions: list | tuple):
         '''block_transitions: list of step numbers at which to transition to the next block'''
-        self.transitions = np.array(block_transitions)
+        self.transitions = sorted(block_transitions)
         self.rng = params.rng
         self.pipeline = [
             (CurriculumAugmentation(identity_fun, 1, 1, params), 0),
@@ -454,12 +454,10 @@ class CurriculumPipeline:
 
     def __call__(self, data: torch.Tensor, step_num: int):
         for (func, block_num) in self.pipeline:
-            block_frac = np.array([step_num // x for x in self.transitions])
-            if np.all(block_frac == 0):
-                block = 0
-            else:
-                block = np.max(np.where(block_frac > 0)[0]) + 1
-            if block >= block_num:
+            block_frac = np.array([max(step_num, 0) - x for x in self.transitions])
+            block = sum(block_frac > 0)
+            # allow all augmentations during validation by specifying step_num=-1 
+            if block >= block_num or step_num == -1:
                 data = func(data, self.rng, step_num)
         return normalize(data)
 
@@ -473,9 +471,13 @@ class CurriculumAugmentation:
         self.rate = rate
 
     def __call__(self, data: torch.Tensor, random_state: random.Random, step_num: int):
-        if self.init_step is None:
+        if self.init_step is None and step_num >= 0:
             self.init_step = step_num
-        if random_state.random() < min(self.p, (step_num - self.init_step) * self.rate * self.p):
+        # run function at probability p if in validation mode
+        if step_num < 0:
+            return self.fun(data, self.params) if random_state.random() < self.p else data
+        # in training mode, scale probability of running function linearly from 0 to p every step by rate
+        elif random_state.random() < min(self.p, (step_num - self.init_step) * self.rate * self.p):
             return self.fun(data, self.params)
         return data
 

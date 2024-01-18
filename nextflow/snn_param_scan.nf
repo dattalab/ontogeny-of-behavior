@@ -3,7 +3,7 @@ def aging_env = "$HOME/miniconda3/envs/aging"
 
 params.config_file = "$HOME/code/ontogeny/configs/03-augmentation-scan.toml"
 params.stage = 1
-params.seed = 0
+params.seed = "0"
 params.stageList = "${params.stage}".tokenize(',') as List
 
 // tmp = '/some/path/to/file.txt'
@@ -32,8 +32,8 @@ process create_grid {
 process run_grid {
     label 'gpu'
     memory 20.GB
-    time { 3.h + (task.attempt - 1) * 2.h }
-    maxRetries 3
+    time { 4.h + (task.attempt - 1) * 2.h }
+    maxRetries 5
     conda aging_env
 
     input:
@@ -48,7 +48,6 @@ process run_grid {
     """
 }
 
-// TODO: add a process to run age classifier or something
 workflow {
     configs = create_grid(Channel.value(params.config_file), Channel.fromList(params.stageList))
     configs = configs.map { file(it.trim()).readLines() }

@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import datetime
 from dataclasses import dataclass
 from toolz import groupby, concat
 from aging.organization.dataframes import get_experiment
@@ -31,11 +32,28 @@ def get_experiment_grouped_files():
     return groupby(get_experiment, concat(f.glob("**/*results_00.h5") for f in FOLDERS))
 
 
+def get_experiment_grouped_depth_files():
+    return groupby(get_experiment, concat(f.glob("**/depth.[da][av][ti]") for f in FOLDERS))
+
+
+def create_plot_path(base_folder: Path, exp_name: str):
+    out_folder = (
+        base_folder /
+        (datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + exp_name)
+    )
+    return out_folder
+
 
 @dataclass
 class ValidationPaths:
     age_classifier: Path = Path('/n/groups/datta/win/longtogeny/size_norm/validation_data/poses_for_age_classifier.p')
+    dynamics: Path = Path('/n/groups/datta/win/longtogeny/size_norm/validation_data/poses_for_dynamics.p.gz')
     classifier_pipeline: Path = Path('/n/groups/datta/win/longtogeny/pipeline_results/age_classifier')
+    manifold_pipeline: Path = Path('/n/groups/datta/win/longtogeny/pipeline_results/pose_manifold')
+    changepoints_pipeline: Path = Path('/n/groups/datta/win/longtogeny/pipeline_results/changepoints')
+    dynamics_pipeline: Path = Path('/n/groups/datta/win/longtogeny/pipeline_results/dynamics')
+    poses_pipeline: Path = Path('/n/groups/datta/win/longtogeny/pipeline_results/poses')
+    size_predictions_pipeline: Path = Path('/n/groups/datta/win/longtogeny/pipeline_results/size_predictions')
 
 
 @dataclass

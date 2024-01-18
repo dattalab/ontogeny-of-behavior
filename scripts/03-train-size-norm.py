@@ -9,7 +9,7 @@ from aging.size_norm.lightning import SizeNormModel, BehaviorValidation
 from toolz import keyfilter, dissoc, merge, valfilter, assoc, get_in
 from aging.size_norm.data import TrainingPaths, AugmentationParams
 from lightning.pytorch.loggers import CSVLogger, TensorBoardLogger
-from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
+from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
 
 
 def keep(d, keys):
@@ -73,12 +73,18 @@ def main(config_path, checkpoint, progress):
         save_top_k=1,
         mode="min",
     )
-    early_stopping_cb = EarlyStopping(
-        monitor="val_loss",
-        patience=get_in(["callbacks", "stopping", "patience"], config, 13),
-        mode="min",
-        verbose=True,
+    latest_ckpt_cb = ModelCheckpoint(
+        save_folder,
+        filename=f"{model_arch.__name__}" + "{epoch:02d}-{val_loss:.2e}_LATEST",
+        monitor=None,
+        save_last=True,
     )
+    # early_stopping_cb = EarlyStopping(
+    #     monitor="val_loss",
+    #     patience=get_in(["callbacks", "stopping", "patience"], config, 13),
+    #     mode="min",
+    #     verbose=True,
+    # )
 
     dynamics_cb = BehaviorValidation(
         training_paths.validation,
@@ -100,11 +106,14 @@ def main(config_path, checkpoint, progress):
         validation_type="classification",
     )
 
+    lr_monitor = LearningRateMonitor(logging_interval="epoch")
+
     trainer = pl.Trainer(
         max_epochs=get_in(["trainer", "max_epochs"], config, 85),
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
-        callbacks=[ckpt_cb, early_stopping_cb, dynamics_cb, age_cb],
+        # callbacks=[ckpt_cb, latest_ckpt_cb, early_stopping_cb, dynamics_cb, age_cb, lr_monitor],
+        callbacks=[ckpt_cb, latest_ckpt_cb, dynamics_cb, age_cb, lr_monitor],  # removing early stopping
         precision="16-mixed" if torch.cuda.is_available() else "bf16-mixed",
         logger=[
             CSVLogger(save_folder, name="size_norm_scan"),
@@ -118,9 +127,9 @@ def main(config_path, checkpoint, progress):
 
     checkpoint_path = None
     if checkpoint:
-        ckpts = sorted(save_folder.glob("*.ckpt"))
-        if len(ckpts) > 0:
-            checkpoint_path = ckpts[-1]
+        ckpt = save_folder / "last.ckpt"
+        if ckpt.exists():
+            checkpoint_path = ckpt
 
     trainer.fit(model, ckpt_path=checkpoint_path)
     print("Done training")

@@ -58,7 +58,7 @@ max_frames = 6000
 patience = 250  # epochs
 
 [trainer]
-max_epochs = 250
+max_epochs = 1000
 
 [model]
 depth = 4
@@ -71,7 +71,7 @@ activation = 'GELU'
 
 [model.lightning]
 adversarial_prob = 0.01
-lr = 0.001
+lr = 0.0025
 weight_decay = 0.00001
 arch = 'ae'  # ae, unet, efficient, efficient_unet, vae
 train_adversarial = false
@@ -87,7 +87,7 @@ l2_regularization_sn_alpha = 5e-4
 use_curriculum_learning = false
 
 [model.lightning.lr_scheduler_params]
-patience = 200
+patience = 70
 
 # scaling magnitude of age-based adversarial loss
 [model.lightning.adversarial_age_scaling]
@@ -109,6 +109,7 @@ img_size = 80
 bottleneck = 25
 # new parameter
 dropout_p = 0.2
+use_fft_branch = false
 
 [model.unet]
 double_conv = true
@@ -129,5 +130,6 @@ separable = true
 residual = true
 img_size = 80
 bottleneck = 25
+use_fft_branch = false
 # new parameter
 dropout_p = 0.2

@@ -28,13 +28,13 @@ class ConvNormAct(nn.Sequential):
             )
         )
         layers = OrderedDict()
-        layers['conv'] = conv(in_features, out_features)
+        layers["conv"] = conv(in_features, out_features)
         if norm:
-            layers['norm'] = norm(out_features)
+            layers["norm"] = norm(out_features)
         if dropout_p > 0 and out_features > 1:
-            layers['dropout'] = nn.Dropout2d(dropout_p)
+            layers["dropout"] = nn.Dropout2d(dropout_p)
         if activation:
-            layers['activation'] = activation()
+            layers["activation"] = activation()
         super().__init__(layers)
 
 
@@ -50,6 +50,53 @@ class DepthwiseSeparableConv(nn.Sequential):
             ),
             nn.Conv2d(in_features, out_features, kernel_size=1),
         )
+
+
+class FFTBranchedConv(nn.Module):
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        activation: nn.Module = nn.LeakyReLU,
+        dropout_p: float = 0.0,
+        separable: bool = True,
+        double_conv: bool = True,
+        residual: bool = False,
+        **kwargs
+    ):
+        super().__init__()
+
+        if double_conv:
+            conv = partial(
+                DoubleConv,
+                residual=residual,
+                separable=separable,
+                activation=activation,
+                dropout_p=dropout_p,
+            )
+        else:
+            conv = partial(
+                ConvNormAct,
+                activation=activation,
+                separable=separable,
+                dropout_p=dropout_p,
+                **kwargs
+            )
+
+        fft_conv = partial(
+            DoubleConv,
+            residual=residual,
+            separable=separable,
+            activation=activation,
+            dropout_p=dropout_p,
+            use_fft=True,
+        )
+
+        self.conv = conv(in_features, out_features)
+        self.fft_conv = fft_conv(in_features, out_features)
+
+    def forward(self, x):
+        return self.conv(x) + self.fft_conv(x)
 
 
 class ResidualAdd(nn.Module):
@@ -182,10 +229,12 @@ class DoubleConv(nn.Module):
         residual=False,
         activation=nn.LeakyReLU,
         dropout_p: float = 0.0,
+        use_fft=False,
     ):
         super().__init__()
         if mid_channels is None:
             mid_channels = out_channels
+        self.use_fft = use_fft
         self.block = nn.Sequential(
             ConvNormAct(
                 in_channels,
@@ -215,6 +264,8 @@ class DoubleConv(nn.Module):
             )
 
     def forward(self, x):
+        if self.use_fft:
+            return torch.fft.irfft2(self.block(torch.fft.rfft2(x.to(torch.float)).real.to(x.dtype)).to(torch.float), x.size()[-2:]).to(x.dtype)
         return self.block(x)
 
 
@@ -228,9 +279,17 @@ class Down(nn.Module):
         residual=False,
         dropout_p: float = 0.0,
         activation=nn.LeakyReLU,
+        use_fft_branch=False,
     ):
         super().__init__()
-        conv = partial(DoubleConv, residual=residual) if double_conv else ConvNormAct
+        if use_fft_branch:
+            conv = partial(
+                FFTBranchedConv,
+                residual=residual,
+                double_conv=double_conv,
+            )
+        else:
+            conv = partial(DoubleConv, residual=residual) if double_conv else ConvNormAct
         self.maxpool_conv = nn.Sequential(
             nn.MaxPool2d(2),
             conv(
@@ -303,10 +362,25 @@ class OutConv(nn.Module):
 
 class Encoder(nn.Module):
     def __init__(
-        self, channels, depths, double_conv, residual, separable, activation, dropout_p
+        self,
+        channels,
+        depths,
+        double_conv,
+        residual,
+        separable,
+        activation,
+        dropout_p,
+        use_fft_branch,
     ):
         super().__init__()
-        conv = partial(DoubleConv, residual=residual) if double_conv else ConvNormAct
+        if use_fft_branch:
+            conv = partial(
+                FFTBranchedConv,
+                double_conv=double_conv,
+                residual=residual,
+            )
+        else:
+            conv = partial(DoubleConv, residual=residual) if double_conv else ConvNormAct
 
         self.down = nn.ModuleList(
             [
@@ -335,6 +409,7 @@ class Encoder(nn.Module):
                             double_conv=double_conv,
                             activation=activation,
                             dropout_p=dropout_p,
+                            use_fft_branch=use_fft_branch,
                         )
                     )
                 else:
@@ -387,7 +462,7 @@ class Bottleneck(nn.Module):
             self.logvar = nn.Linear(bottle_in, latent_dim)
         else:
             down_layers.append(nn.Linear(bottle_in, latent_dim))
-        
+
         self.down = nn.Sequential(*down_layers)
 
         up_layers = [
@@ -404,7 +479,7 @@ class Bottleneck(nn.Module):
         ]
         if not is_variational:
             up_layers.insert(0, nn.Tanh())
-        
+
         self.up = nn.Sequential(*up_layers)
 
     def reparameterize(self, mu, logvar):
@@ -414,7 +489,7 @@ class Bottleneck(nn.Module):
             return eps.mul(std).add_(mu)
         else:
             return mu
-        
+
     def pre_decoder(self, latents):
         return self.up(latents)
 
@@ -422,7 +497,7 @@ class Bottleneck(nn.Module):
         x = self.down(x)
         if self.is_variational:
             mu = self.mu(x)
-            logvar = self.logvar(x) + 1e-6  
+            logvar = self.logvar(x) + 1e-6
             # resampled latent space
             x = self.reparameterize(mu, logvar)
             return self.pre_decoder(x), x, mu, logvar
@@ -586,6 +661,7 @@ class Autoencoder(nn.Module):
         bottleneck: Optional[int] = None,
         bottleneck_channels: Optional[int] = 30,
         img_size: Optional[int] = None,
+        use_fft_branch: bool = False,
     ):
         """Channels must include the input channel count (usually 1) as well"""
         super().__init__()
@@ -608,7 +684,14 @@ class Autoencoder(nn.Module):
             )
 
         self.encoder = Encoder(
-            channels, depths, double_conv, residual, separable, activation, dropout_p
+            channels,
+            depths,
+            double_conv,
+            residual,
+            separable,
+            activation,
+            dropout_p,
+            use_fft_branch,
         )
         self.decoder = Decoder(
             channels, depths, double_conv, residual, separable, activation, dropout_p
@@ -639,6 +722,7 @@ class VariationalAutoencoder(nn.Module):
         bottleneck: Optional[int] = None,
         bottleneck_channels: Optional[int] = 30,
         img_size: Optional[int] = None,
+        use_fft_branch: bool = False,
     ):
         """Channels must include the input channel count (usually 1) as well"""
         super().__init__()
@@ -647,10 +731,27 @@ class VariationalAutoencoder(nn.Module):
         channels = [input_channel] + channels
 
         self.encoder = Encoder(
-            channels, depths, double_conv, residual, separable, activation, dropout_p
+            channels,
+            depths,
+            double_conv,
+            residual,
+            separable,
+            activation,
+            dropout_p,
+            use_fft_branch,
         )
 
-        self.bottleneck = Bottleneck(img_size, depth, channels[-1], bottleneck_channels, bottleneck, separable, activation, dropout_p, is_variational=True)
+        self.bottleneck = Bottleneck(
+            img_size,
+            depth,
+            channels[-1],
+            bottleneck_channels,
+            bottleneck,
+            separable,
+            activation,
+            dropout_p,
+            is_variational=True,
+        )
 
         self.decoder = Decoder(
             channels, depths, double_conv, residual, separable, activation, dropout_p
@@ -666,8 +767,6 @@ class VariationalAutoencoder(nn.Module):
 
         x = self.decoder(x)
         return F.sigmoid(x), z, mu, logvar
-
-
 
 
 class EfficientAutoencoder(nn.Module):

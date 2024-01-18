@@ -57,6 +57,7 @@ def load_model_parameters(files: list[Path], debug=False):
                 activation=config['model']['activation'],
                 bottleneck=get_in(['model', arch, 'bottleneck'], config, None),
                 curriculum_learning=get_in(['model', 'lightning', 'use_curriculum_learning'], config, False),
+                use_fft=get_in(['model', arch, 'use_fft_branch'], config, False),
             )
             if 'dynamics_correlation' in mse_df.columns:
                 out['dynamics_corr'] = mse_df['dynamics_correlation'].dropna().iloc[-1]
@@ -75,10 +76,10 @@ def flatten(x):
 
 
 def subsample(data, subset=200, seed=0):
-    np.random.seed(seed)
+    rng = np.random.default_rng(seed)
     sample = []
     for v in data.values():
-        sample.append(v[np.random.permutation(len(v))[:subset]])
+        sample.append(v[rng.permutation(len(v))[:subset]])
     return np.concatenate(sample, axis=0)
 
 

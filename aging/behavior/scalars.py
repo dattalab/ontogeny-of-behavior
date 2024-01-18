@@ -85,7 +85,9 @@ def pxs_to_mm(coords, resolution=(512, 424), field_of_view=(70.6, 60), true_dept
     return new_coords
 
 
-def compute_scalars(frames, centroid=None, true_depth=None, is_recon=True, height_thresh=10):
+def compute_scalars(frames, centroid=None, true_depth=None, is_recon=True, height_thresh=10, clean_flag=False):
+    from aging.size_norm.data import clean
+
     convert_mm = not (centroid is None or true_depth is None)
     if convert_mm:
         centroid_mm = pxs_to_mm(centroid, true_depth=true_depth)
@@ -97,6 +99,8 @@ def compute_scalars(frames, centroid=None, true_depth=None, is_recon=True, heigh
     height = []
     area = []
     for i, frame in enumerate(frames):
+        if clean_flag:
+            frame = clean(frame, height_thresh=height_thresh)
         # compute ellipse
         feats = im_moment_features(frame, height_thresh)
         if feats is None:

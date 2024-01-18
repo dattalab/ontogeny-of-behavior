@@ -6,6 +6,7 @@ import numpy as np
 import lightning.pytorch as pl
 import torch.nn.functional as F
 from io import BytesIO
+from typing import Any
 from toolz import curry, partial, keymap
 from pathlib import Path
 from tqdm.auto import tqdm
@@ -31,6 +32,15 @@ from aging.size_norm.test import classify_age, dynamics_correlation
 from aging.size_norm.vae_losses import vae_loss
 from torchmetrics.functional import r2_score
 
+
+class ChainedScheduler(torch.optim.lr_scheduler.ChainedScheduler):
+    def step(self, metrics, epoch=None):
+        for scheduler in self._schedulers:
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(metrics, epoch)
+            else:
+                scheduler.step()
+        self._last_lr = [group['lr'] for group in self._schedulers[-1].optimizer.param_groups]
 
 class BehaviorValidation(Callback):
     def __init__(
@@ -241,7 +251,7 @@ class SizeNormModel(pl.LightningModule):
         self.model = model(**model_params).to(device)
         if use_curriculum_learning:
             # TODO: don't hard-code this
-            blocks = [2500, 10000, 11500, 13500]
+            blocks = [7000, 13000, 19000]
             self.augment = CurriculumPipeline(1e-4, aug_params, blocks)
         else:
             self.augment = Augmenter(aug_params, paths.wall_noise, tps_training_paths.tps_multivariate_t_params)
@@ -293,6 +303,8 @@ class SizeNormModel(pl.LightningModule):
                 else:
                     frames = self.augment(frames)
                 x = (frames, target)
+            elif self.trainer.validating and self.hparams.use_curriculum_learning:
+                x = self.augment(x, -1)
             else:
                 if self.hparams.use_curriculum_learning:
                     x = self.augment(x, self.global_step)
@@ -452,6 +464,10 @@ class SizeNormModel(pl.LightningModule):
         ):
             self.lr_schedulers().step(self.trainer.callback_metrics["val_loss"])
 
+    def lr_scheduler_step(self, scheduler, metric: Any | None) -> None:
+        if 'val_loss' in self.trainer.callback_metrics:
+            scheduler.step(self.trainer.callback_metrics["val_loss"])
+
     def configure_optimizers(self):
         params = add_weight_decay(self.model, self.hparams.weight_decay)
         optimizer = torch.optim.AdamW(
@@ -459,13 +475,19 @@ class SizeNormModel(pl.LightningModule):
             lr=self.hparams.lr,
             weight_decay=0,
         )
+
+        scheduler = ChainedScheduler([
+            torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1e-4, end_factor=1.0, total_iters=30),
+            torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                **self.lr_scheduler_params,
+            ),
+        ])
+
         opt_dict = dict(
             optimizer=optimizer,
             lr_scheduler=dict(
-                scheduler=torch.optim.lr_scheduler.ReduceLROnPlateau(
-                    optimizer,
-                    **self.lr_scheduler_params,
-                ),
+                scheduler=scheduler,
                 monitor="val_loss",
             ),
         )
@@ -530,6 +552,8 @@ def predict(
     if not isinstance(model, torch.nn.Module):
         if isinstance(model, Path) and model.suffix == ".pt":
             model = torch.jit.load(model, map_location=device)
+        elif isinstance(model, str) and model.endswith(".pt"):
+            model = torch.jit.load(model, map_location=device)
         else:
             model = SizeNormModel.load_from_checkpoint(model, map_location=device)
             model.freeze()
@@ -538,7 +562,10 @@ def predict(
     output = []
     with torch.no_grad():
         for batch in tqdm(dataset, **tqdm_kwargs):
-            output.append(unnormalize(model(batch.to(device))).cpu().numpy().squeeze())
+            model_output = model(batch.to(device))
+            if isinstance(model_output, tuple):
+                model_output = model_output[0]
+            output.append(unnormalize(model_output).cpu().numpy().squeeze())
     output = np.concatenate(output, axis=0)
     del dataset
     del data

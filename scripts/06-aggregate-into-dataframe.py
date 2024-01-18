@@ -40,13 +40,12 @@ from aging.organization.dataframes import (
 @click.option("--data-version", type=int, default=5)
 @click.option("--df-version", type=int, default=0)
 @click.option("--recon-key", type=str, default="win_size_norm_frames_v6")
-@click.option("--rescaled-key", type=str, default="rescaled_frames")
-def main(data_folder, experiment, data_version, df_version, recon_key, rescaled_key):
+def main(data_folder, experiment, data_version, df_version, recon_key):
     n_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
 
     def mp_extract(args):
         uuid, path = args
-        return (uuid, path, extract_scalars(path, recon_key, rescaled_key))
+        return (uuid, path, extract_scalars(path, recon_key))
 
     data_folder = (
         Path(data_folder).expanduser().resolve() / f"version_{data_version:02d}"

@@ -22,3 +22,26 @@ double_conv = [true]
 bottleneck = [25]
 
 
+[stage4.model]
+arch = ['vae']
+init_channel = [128]
+bottleneck = [25]
+double_conv = [true]
+use_curriculum_learning = [false, true]
+use_fft_branch = [false, true]
+
+
+[stage5.model]
+arch = ['vae', 'ae']
+init_channel = [128]
+bottleneck = [25]
+double_conv = [true]
+use_curriculum_learning = [false, true]
+use_fft_branch = [false, true]
+
+[stage6.model]
+arch = ['vae', 'ae']
+init_channel = [128, 256, 512]
+double_conv = [true]
+bottleneck = [25]
+use_curriculum_learning = [true]
