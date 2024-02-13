@@ -1,7 +1,9 @@
+import gc
 import os
 import h5py
 import pandas as pd
 from pathlib import Path
+from tqdm.auto import tqdm
 from multiprocess import Pool
 from aging.organization.paths import FOLDERS
 from aging.organization.dataframes import (
@@ -20,7 +22,8 @@ def filter_session_length(df: pd.DataFrame, min_secs=600, experiment: str = None
     if "longtogeny" in experiment and "jax" not in experiment:
         remove_uuids = uuid_length[uuid_length > 1250].index
         df = df[~df["uuid"].isin(remove_uuids)]
-    return df.copy()
+    gc.collect()
+    return df
 
 
 def longtogeny_mouse_map(string):
@@ -32,7 +35,7 @@ def longtogeny_mouse_map(string):
     if "long-4-1" in string:
         return "04_02"
 
-    if "nt" in string:
+    if "nt" in string.lower():
         m = "_01"
     elif "RL" in string:
         m = "_04"
@@ -50,7 +53,7 @@ def longtogeny_mouse_map(string):
     if "ong1" in string:
         return "01" + m
 
-    return string[:5]
+    return string[:5].lower()
 
 
 def corrections(df: pd.DataFrame, experiment: str):
@@ -68,14 +71,14 @@ def corrections(df: pd.DataFrame, experiment: str):
             pd.Timestamp("2021-10-01 17:50:37"),
         ]
         df = df[~df["date"].isin(fsessions)]
+        gc.collect()
     elif "wheel" in experiment:
-        df = df[df["session_name"].str.contains("wheel", case=False)].copy()
-
+        df = df[df["session_name"].str.contains("wheel", case=False)]
+        gc.collect()
         # this is where we add age for the wheel data, because it is dependent on the session name
         age = df['session_name'].str[6:8].astype(int)
         start = pd.Timestamp(year=2023, month=6, day=1)
         df['age'] = (df['date'] - start).dt.days / 7 + age
-
 
     return df
 
@@ -120,12 +123,14 @@ def mouse_filter(df: pd.DataFrame, experiment: str):
             'M5_01', 'M5_02', 'M5_03', 'M5_04'
         ]
     if len(keep_mice) > 0:
-        df = df[df['mouse'].isin(keep_mice)].copy()
+        df = df[df['mouse'].isin(keep_mice)]
+        gc.collect()
     return df
 
 
-def aggregate_into_dataframe(experiment: str, model_path: str, recon_key: str):
+def aggregate_into_dataframe(experiment: str, model_path: str, recon_key: str, debug: bool = False):
     n_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
+    print(f"Using {n_cpus} cpus")
 
     model_path = Path(model_path)
     syllable_path = model_path / "all_data_pca/syllables.h5"
@@ -135,12 +140,13 @@ def aggregate_into_dataframe(experiment: str, model_path: str, recon_key: str):
         return (uuid, path, extract_scalars(path, recon_key))
 
     uuid_map = create_uuid_map(FOLDERS, syllable_path, experiment)
+    if debug:
+        print(uuid_map)
 
     df = []
     with h5py.File(syllable_path, "r") as h5f, Pool(n_cpus) as pool:
-        for uuid, path, extraction_data in pool.imap_unordered(
-            mp_extract, uuid_map.items()
-        ):
+        loop_fun = map if debug else pool.imap_unordered
+        for uuid, path, extraction_data in tqdm(loop_fun(mp_extract, uuid_map.items())):
             if extraction_data is None:
                 extraction_data = dict(session_name="", subject_name="")
 
@@ -165,15 +171,15 @@ def aggregate_into_dataframe(experiment: str, model_path: str, recon_key: str):
                 )
                 _df["onsets"] = _df["syllables"].diff() != 0
                 float_cols = _df.select_dtypes(include=["float64", "float32"]).columns
-                _df[float_cols] = _df[float_cols].astype("float32[pyarrow]")
+                _df[float_cols] = _df[float_cols].astype("float32")
                 _df = _df.astype(
                     dict(
-                        syllables="int16[pyarrow]",
-                        file="string[pyarrow]",
-                        experiment="string[pyarrow]",
-                        session_name="string[pyarrow]",
-                        subject_name="string[pyarrow]",
-                        uuid="string[pyarrow]",
+                        syllables="int16",
+                        file="string",
+                        experiment="string",
+                        session_name="string",
+                        subject_name="string",
+                        uuid="string",
                     )
                 )
                 df.append(_df)
@@ -181,6 +187,8 @@ def aggregate_into_dataframe(experiment: str, model_path: str, recon_key: str):
                 print("Error on file", path)
                 print(e)
                 print("-" * 25)
+    if len(df) == 0:
+        return None
     return pd.concat(df, ignore_index=True)
 
 
@@ -203,20 +211,13 @@ def create_usage_dataframe(df: pd.DataFrame):
 
 
 def normalize_dataframe(df: pd.DataFrame):
-    df = df / df.sum(axis="columns").values[:, None]
+    sum_of_vals = df.sum(axis="columns").to_numpy()
+    df = df / sum_of_vals[:, None]
     return df
 
 
 def filter_high_usage(df: pd.DataFrame):
     norm_df = normalize_dataframe(df)
-    filter_idx = (norm_df > 0.2).any(1)
+    filter_idx = (norm_df > 0.2).any(axis="columns")
 
     return df[~filter_idx]
-
-
-def experiment_specific_filter(df: pd.DataFrame, experiment: str):
-    if "longtogeny_males" == experiment:
-        pass
-    elif "longtogeny_v2_females" == experiment:
-
-    return df

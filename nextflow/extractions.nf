@@ -32,6 +32,7 @@ process find_extractable_files {
 process extract {
     label "short"
     memory 10.GB
+    cpus 1
     time { 40.m * task.attempt }
     maxRetries 1
     conda moseq_env
@@ -54,6 +55,7 @@ process extract {
 
 process compress {
     label "short"
+    cpus 1
     memory 13.GB
     time { 75.m * task.attempt }
     maxRetries 1
@@ -138,7 +140,7 @@ workflow {
         .flatten()
         .filter { it != "" && it != null && it != "\n" }
     files = extract(files)
-    avi_files = files.filter { it.endswith(".dat") }
+    avi_files = files.filter { it.endsWith(".dat") }
     compress(avi_files)
     // collect extractions, because they won't affect output of this find function
     norm_files = find_files_to_normalize(files.collect())

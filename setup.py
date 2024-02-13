@@ -14,7 +14,7 @@ setup(
         "scipy",
         "matplotlib",
         "seaborn",
-        "torch",
+        #"torch",
         "ipykernel",
         "ipywidgets",
         "toolz",
@@ -27,6 +27,10 @@ setup(
         "lightning",
         "click",
         "multiprocess",
+        "optax",
+        "jax",
+        "tensorflow-probability",
+        "statsmodels",
         #"git+https://github.com/wingillis/jax-moseq.git@robust_arhmm"
     ]
 )

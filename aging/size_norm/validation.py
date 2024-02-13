@@ -35,7 +35,7 @@ def _transform_data(data: dict, model_path: Path | str):
     predict_fun = compose(
         np.uint8,
         np.round,
-        partial(predict, model=model_path, disable=True),
+        partial(predict, model=model_path, disable=True, batch_size=128),
         Session,
         clean_img,
     )

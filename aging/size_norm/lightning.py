@@ -1,5 +1,6 @@
 import os
 import PIL
+from lightning import LightningModule
 import torch
 import random
 import numpy as np
@@ -9,12 +10,14 @@ from io import BytesIO
 from typing import Any
 from toolz import curry, partial, keymap
 from pathlib import Path
+from torch.optim.optimizer import Optimizer
 from tqdm.auto import tqdm
 from ipywidgets import Image
 from IPython.display import display
 from lightning.pytorch import Callback
 from torchvision.utils import make_grid
 from torch.utils.data import DataLoader, RandomSampler
+from lightning.pytorch.callbacks import BaseFinetuning
 from aging import organization
 from aging.size_norm.data import (
     AugmentationParams,
@@ -238,6 +241,7 @@ class SizeNormModel(pl.LightningModule):
         vae_loss_params=dict(),
         tps_training_paths=organization.paths.TrainingPaths(),
         use_curriculum_learning: bool = False,
+        curriculum_blocks: list[int] = [7000, 13000, 19000],
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -249,12 +253,7 @@ class SizeNormModel(pl.LightningModule):
         self.scaling_fun = exponential_scaling(**adversarial_age_scaling)
 
         self.model = model(**model_params).to(device)
-        if use_curriculum_learning:
-            # TODO: don't hard-code this
-            blocks = [7000, 13000, 19000]
-            self.augment = CurriculumPipeline(1e-4, aug_params, blocks)
-        else:
-            self.augment = Augmenter(aug_params, paths.wall_noise, tps_training_paths.tps_multivariate_t_params)
+        self.augment = CurriculumPipeline(1e-4, aug_params, curriculum_blocks)
 
         self.loss_fun = (
             F.mse_loss
@@ -309,7 +308,7 @@ class SizeNormModel(pl.LightningModule):
                 if self.hparams.use_curriculum_learning:
                     x = self.augment(x, self.global_step)
                 else:
-                    x = self.augment(x)
+                    x = self.augment(x, -1)
         return x, y
 
     def train_classifier(self, frames, y, opt):
@@ -421,6 +420,7 @@ class SizeNormModel(pl.LightningModule):
             self.log_dict(loss[1])
             return dict(loss=loss[0])
         else:
+            self.log("mse_loss", loss)
             self.log("train_loss", loss)
             return dict(loss=loss)
 
@@ -433,6 +433,7 @@ class SizeNormModel(pl.LightningModule):
             self.log_dict(keymap(lambda k: "val_" + k, loss[1]))
             self.log("val_loss", loss[0], prog_bar=True)
         else:
+            self.log("val_mse_loss", loss)
             self.log("val_loss", loss, prog_bar=True)
         if batch_idx == 0:
             if isinstance(yhat, tuple):
@@ -477,7 +478,7 @@ class SizeNormModel(pl.LightningModule):
         )
 
         scheduler = ChainedScheduler([
-            torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1e-4, end_factor=1.0, total_iters=30),
+            torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1e-3, end_factor=1.0, total_iters=5),
             torch.optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer,
                 **self.lr_scheduler_params,
@@ -537,6 +538,7 @@ class SizeNormModel(pl.LightningModule):
             self.val_data,
             batch_size=self.hparams.batch_size,
             num_workers=int(os.environ.get("SLURM_CPUS_PER_TASK", default=1)),
+            shuffle=True,
         )
 
 
@@ -705,3 +707,18 @@ class SizeNormModelStep2(pl.LightningModule):
             shuffle=False,
             num_workers=int(os.environ.get("SLURM_CPUS_PER_TASK", default=1)),
         )
+
+
+class EncoderFinetuningCallback(BaseFinetuning):
+    def __init__(self, freeze_at_epoch=30):
+        super().__init__()
+        self._freeze_at_epoch = freeze_at_epoch
+    
+    def freeze_before_training(self, pl_module: LightningModule) -> None:
+        return None
+    
+    def finetune_function(self, pl_module: LightningModule, epoch: int, optimizer: Optimizer) -> None:
+        if epoch == self._freeze_at_epoch:
+            self.freeze(modules=pl_module.model.decoder, train_bn=True)
+            if "Variational" in type(pl_module.model).__name__:
+                self.freeze(modules=pl_module.model.bottleneck.up, train_bn=True)

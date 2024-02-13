@@ -5,7 +5,7 @@ import random
 import lightning.pytorch as pl
 import aging.size_norm.models as models
 from pathlib import Path
-from aging.size_norm.lightning import SizeNormModel, BehaviorValidation
+from aging.size_norm.lightning import SizeNormModel, BehaviorValidation, EncoderFinetuningCallback
 from toolz import keyfilter, dissoc, merge, valfilter, assoc, get_in
 from aging.size_norm.data import TrainingPaths, AugmentationParams
 from lightning.pytorch.loggers import CSVLogger, TensorBoardLogger
@@ -66,25 +66,31 @@ def main(config_path, checkpoint, progress):
         seed=config["augmentation"]["seed"],
     )
 
-    ckpt_cb = ModelCheckpoint(
+    mse_ckpt_cb = ModelCheckpoint(
         save_folder,
-        filename=f"{model_arch.__name__}" + "-{epoch:02d}-{val_loss:.2e}",
-        monitor="val_loss",
+        filename=f"{model_arch.__name__}" + "-{epoch:02d}-{val_mse_loss:.2e}",
+        monitor="val_mse_loss",
         save_top_k=1,
         mode="min",
     )
+
     latest_ckpt_cb = ModelCheckpoint(
         save_folder,
-        filename=f"{model_arch.__name__}" + "{epoch:02d}-{val_loss:.2e}_LATEST",
+        filename=f"{model_arch.__name__}" + "-{epoch:02d}-{val_loss:.2e}-{val_mse_loss:.2e}_LATEST",
         monitor=None,
         save_last=True,
+        every_n_epochs=3,
     )
+
     # early_stopping_cb = EarlyStopping(
     #     monitor="val_loss",
     #     patience=get_in(["callbacks", "stopping", "patience"], config, 13),
     #     mode="min",
     #     verbose=True,
     # )
+
+    if finetune_flag := get_in(['callbacks', 'finetuning', 'finetune'], config, False):
+        fine_tuning = EncoderFinetuningCallback(freeze_at_epoch=get_in(['callbacks', 'finetuning', 'freeze_epoch'], config, 30))
 
     dynamics_cb = BehaviorValidation(
         training_paths.validation,
@@ -108,12 +114,15 @@ def main(config_path, checkpoint, progress):
 
     lr_monitor = LearningRateMonitor(logging_interval="epoch")
 
+    callbacks = [latest_ckpt_cb, dynamics_cb, age_cb, lr_monitor, mse_ckpt_cb]
+    if finetune_flag:
+        callbacks.append(fine_tuning)
+
     trainer = pl.Trainer(
         max_epochs=get_in(["trainer", "max_epochs"], config, 85),
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
-        # callbacks=[ckpt_cb, latest_ckpt_cb, early_stopping_cb, dynamics_cb, age_cb, lr_monitor],
-        callbacks=[ckpt_cb, latest_ckpt_cb, dynamics_cb, age_cb, lr_monitor],  # removing early stopping
+        callbacks=callbacks,  # removing early stopping
         precision="16-mixed" if torch.cuda.is_available() else "bf16-mixed",
         logger=[
             CSVLogger(save_folder, name="size_norm_scan"),
@@ -135,7 +144,7 @@ def main(config_path, checkpoint, progress):
     print("Done training")
 
     if not trainer.interrupted:
-        model = SizeNormModel.load_from_checkpoint(ckpt_cb.best_model_path)
+        model = SizeNormModel.load_from_checkpoint(mse_ckpt_cb.best_model_path)
         # save jit version of model
         mdl = torch.jit.trace(
             model.model.eval(),

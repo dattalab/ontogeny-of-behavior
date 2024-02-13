@@ -6,9 +6,6 @@ params.stage = 1
 params.seed = "0"
 params.stageList = "${params.stage}".tokenize(',') as List
 
-// tmp = '/some/path/to/file.txt'
-// println file(tmp).getParent() / 'model.pt'
-
 
 process create_grid {
     executor 'local'
@@ -31,8 +28,8 @@ process create_grid {
 
 process run_grid {
     label 'gpu'
-    memory 20.GB
-    time { 4.h + (task.attempt - 1) * 2.h }
+    memory 15.GB
+    time { 4.h + (task.attempt - 1) * 3.h }
     maxRetries 5
     conda aging_env
 

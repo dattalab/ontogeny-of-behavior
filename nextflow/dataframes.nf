@@ -84,20 +84,32 @@ process get_experiment_names {
     script:
     """
     #!/bin/env python
+    from toolz import dissoc
     from aging.organization.paths import get_experiment_grouped_files
 
     files = get_experiment_grouped_files()
+    files = dissoc(files, "dana_ontogeny_dana_ontogeny")
     with open("experiments.txt", "w") as f:
-        f.write("\n".join(map(str, files.keys())))
+        f.write("\\n".join(map(str, files.keys())))
     """
 }
 
 process create_dataframe {
     label 'short'
-    cpus 10
-    memory 75.GB
-    time { 2.h * task.attempt }
+    cpus 11
+    memory {
+        if (experiment.contains("longtogeny_v2"))
+            return 80.GB
+        else if (experiment.contains("longtogeny"))
+            return 75.GB
+        else if (experiment.contains("ontogeny"))
+            return 25.GB
+        else
+            return 50.GB
+    }
+    time { 90.m * task.attempt }
     maxRetries 2
+    conda aging_env
 
     input:
     val experiment
@@ -108,26 +120,45 @@ process create_dataframe {
     script:
     """
     #!/bin/env python
-    from aging.moseq_modeling.dataframe import aggregate_into_dataframe, filter_session_length, add_mouse_id, corrections, mouse_filter
+    from aging.moseq_modeling.dataframe import (
+        aggregate_into_dataframe, filter_session_length,
+        add_mouse_id, corrections, mouse_filter
+    )
 
     df = aggregate_into_dataframe(
         "${experiment}",
         "${params.moseq_folder}",
         "${params.size_norm_name}"
     )
-    df = filter_session_length(df, experiment="${experiment}")
-    df = corrections(df, "${experiment}")
-    df = add_mouse_id(df, "${experiment}")
-    df = mouse_filter(df, "${experiment}")
-    df.to_parquet("${params.moseq_folder}/${experiment}_syllable_df_v00.parquet", compression="brotli")
+    if df is not None:
+        print("Filtering sessions")
+        df = filter_session_length(df, experiment="${experiment}")
+        print("Correcting errors")
+        df = corrections(df, "${experiment}")
+        print("Adding mouse ids")
+        df = add_mouse_id(df, "${experiment}")
+        print("Filtering unwanted mice")
+        df = mouse_filter(df, "${experiment}")
+        print("Saving dataframe")
+        df.to_parquet("${params.moseq_folder}/${experiment}_syllable_df_v00.parquet", compression="brotli")
     """
 }
 
 process create_usage_dataframe {
     label 'short'
     cpus 1
-    memory = 60.GB
+    memory {
+        if (experiment.contains("longtogeny_v2"))
+            return 80.GB
+        else if (experiment.contains("longtogeny"))
+            return 75.GB
+        else if (experiment.contains("ontogeny"))
+            return 25.GB
+        else
+            return 50.GB
+    }
     time 10.m
+    conda aging_env
 
     input:
     val experiment
@@ -139,25 +170,23 @@ process create_usage_dataframe {
     """
     #!/bin/env python
     import pandas as pd
-    from aging.moseq_modeling.dataframe import create_usage_dataframe, normalize_dataframe, filter_high_usage, experiment_specific_filter
+    from pathlib import Path
+    from aging.moseq_modeling.dataframe import (
+        create_usage_dataframe, normalize_dataframe, filter_high_usage
+    )
 
-    df = pd.read_parquet("${params.moseq_folder}/${experiment}_syllable_df_v00.parquet")
+    file = Path("${params.moseq_folder}/${experiment}_syllable_df_v00.parquet")
+    if file.exists():
+        df = pd.read_parquet(file)
 
-    # syllable counts (with raw syllable labels)
-    df = create_usage_dataframe(df)
-    df = filter_high_usage(df)
-    df.to_parquet("${params.moseq_folder}/${experiment}_raw_counts_matrix_v00.parquet")
+        # syllable counts (with raw syllable labels)
+        df = create_usage_dataframe(df)
+        df = filter_high_usage(df)
+        df.to_parquet("${params.moseq_folder}/${experiment}_raw_counts_matrix_v00.parquet")
 
-    # normalized syllable usage (should sum to 1)
-    norm_df = normalize_dataframe(df)
-    norm_df.to_parquet("${params.moseq_folder}/${experiment}_raw_usage_matrix_v00.parquet")
-
-    # filter for bad sessions for both counts and usage
-    df = experiment_specific_filter(df, "${experiment}")
-    df.to_parquet("${params.moseq_folder}/${experiment}_filtered_counts_matrix_v01.parquet")
-    
-    norm_df = experiment_specific_filter(norm_df, "${experiment}")
-    norm_df.to_parquet("${params.moseq_folder}/${experiment}_filtered_usage_matrix_v01.parquet")
+        # normalized syllable usage (should sum to 1)
+        norm_df = normalize_dataframe(df)
+        norm_df.to_parquet("${params.moseq_folder}/${experiment}_raw_usage_matrix_v00.parquet")
     """
 }
 
@@ -172,7 +201,26 @@ process relabel_dataframe {
     script:
     """
     #!/bin/env python
+    import pandas as pd
+    from pathlib import Path
+    from aging.behavior.syllables import relabel_by_usage
 
+    folder = Path("${params.moseq_folder}")
+
+    files = sorted(folder.glob("*raw_*_matrix_v00.parquet"))
+
+    def get_usage_map():
+        df = pd.read_parquet(folder / "ontogeny_males_raw_counts_matrix_v00.parquet")
+        counts = df.sum().sort_values(ascending=False).index
+        leftovers = set(range(100)) - set(counts)
+        counts = list(counts) + list(leftovers)
+        return {syll: i for i, syll in enumerate(counts)}
+    
+    usage_map = get_usage_map()
+    for file in files:
+        df = pd.read_parquet(file)
+        df.columns = [usage_map[syll] for syll in df.columns]
+        df.to_parquet(file.with_name(file.name.replace("raw", "relabeled")))
     """
 }
 
@@ -180,7 +228,6 @@ workflow {
     out = organize_extractions(params.moseq_folder)
     out = apply_pca(out)
     out = apply_moseq_model(out)
-    // TODO: make a list of dataframes then send to create_dataframe
     experiment_path = get_experiment_names(out).map { it.readLines() }
         .flatten()
         .filter { it != "" && it != null && it != "\n" }

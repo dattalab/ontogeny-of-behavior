@@ -39,7 +39,7 @@ def format_plots():
         "pdf.fonttype": 42,
         "figure.figsize": (3, 3),
         "font.family": "sans-serif",
-        "font.sans-serif": "Helvetica",
+        # "font.sans-serif": "Helvetica",
         "mathtext.fontset": "custom",
         "mathtext.rm": "Liberation Sans",
         "mathtext.it": "Liberation Sans:italic",

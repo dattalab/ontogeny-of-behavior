@@ -58,6 +58,9 @@ class ValidationPaths:
 
 @dataclass
 class TrainingPaths:
-    tps_training_data: Path = Path('/n/groups/datta/win/longtogeny/size_norm/training_data/poses_for_tps_mapping.p.gz')
-    tps_fits: Path = Path('/n/groups/datta/win/longtogeny/size_norm/training_data/tps_fits.p.gz')
+    # tps_training_data: Path = Path('/n/groups/datta/win/longtogeny/size_norm/training_data/poses_for_tps_mapping.p.gz')
+    tps_training_data: Path = Path('/n/groups/datta/win/longtogeny/size_norm/training_data/poses_for_tps_mapping_v2.p.gz')
+    # tps_fits: Path = Path('/n/groups/datta/win/longtogeny/size_norm/training_data/tps_fits.p.gz')
+    tps_fits: Path = Path('/n/groups/datta/win/longtogeny/size_norm/training_data/tps_fits_v2.p.gz')
     tps_multivariate_t_params: Path = Path('/n/groups/datta/win/longtogeny/size_norm/training_data/tps_multivariate_t_params.p.gz')
+    tps_params: Path = Path('/n/groups/datta/win/longtogeny/size_norm/training_data/tps_params_v2.p.gz')

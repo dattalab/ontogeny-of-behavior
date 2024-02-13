@@ -1,5 +1,6 @@
 [paths]
-saving = '/n/groups/datta/win/longtogeny/size_norm/models/bottleneck_optimization_00'
+# saving = '/n/groups/datta/win/longtogeny/size_norm/models/bottleneck_optimization_00'
+saving = '/n/groups/datta/win/longtogeny/size_norm/models/freeze_decoder_00'
 
 [stage1.model]
 arch = ['ae', 'vae']
@@ -45,3 +46,26 @@ init_channel = [128, 256, 512]
 double_conv = [true]
 bottleneck = [25]
 use_curriculum_learning = [true]
+
+# this one is to test freezing the decoder after 30 epochs - doesn't work like I thought
+[stage7.model]
+arch = ['vae']
+init_channel = [64]
+bottleneck = [10, 25]
+double_conv = [true]
+use_curriculum_learning = [false]
+
+# this one is to test removing freezing and curriculum learning
+[stage8.model]
+arch = ['vae', 'ae']
+init_channel = [64]
+bottleneck = [10, 25]
+double_conv = [true]
+use_curriculum_learning = [false]
+
+[stage9.model]
+arch = ['vae', 'ae']
+init_channel = [128, 256, 512]
+double_conv = [true]
+bottleneck = [9, 25, 50]
+use_curriculum_learning = [false]

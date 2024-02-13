@@ -24,7 +24,8 @@ def file_access_mode(path: Path):
     return 'w'
 
 
-def apply_arhmm(model_folder: Path, batch_size: int = 80, robust: bool = False):
+def apply_arhmm(model_folder: str, batch_size: int = 80, robust: bool = False):
+    model_folder = Path(model_folder)
     pca_path = model_folder / "all_data_pca/pca_scores.h5"
     syllables_path = pca_path.with_name("syllables.h5")
     mode = file_access_mode(syllables_path)

@@ -14,7 +14,13 @@ from toolz import valfilter
 from functools import cache
 from scipy.stats import multivariate_t
 from sklearn.preprocessing import LabelEncoder
-from kornia.geometry.transform import get_tps_transform, warp_image_tps, resize, scale
+from kornia.geometry.transform import (
+    get_tps_transform,
+    warp_image_tps,
+    resize,
+    scale,
+    elastic_transform2d,
+)
 
 
 @dataclass
@@ -58,14 +64,20 @@ class AugmentationParams:
     zoom_unzoom_prob: float = 0.3
     random_elastic_prob: float = 0.2
     tps_warp_prob: float = 0.65
+    scale_and_warp_prob: float = 0.166  #  multiplied with scale_prob to equal 0.1
     wall_reflection_prob: float = 0.15
 
     # random
     rng: random.Random = random.Random(0)
 
     # paths
-    wall_noise_path: str = '/n/groups/datta/win/longtogeny/data/size_network/training_data/wall_noise.h5'
-    tps_sampler_path: str = '/n/groups/datta/win/longtogeny/size_norm/training_data/tps_multivariate_t_params.p.gz'
+    wall_noise_path: str = (
+        "/n/groups/datta/win/longtogeny/data/size_network/training_data/wall_noise.h5"
+    )
+    # tps_sampler_path: str = "/n/groups/datta/win/longtogeny/size_norm/training_data/tps_multivariate_t_params.p.gz"
+    tps_sampler_path: str = (
+        "/n/groups/datta/win/longtogeny/size_norm/training_data/tps_params_v2.p.gz"
+    )
 
 
 @dataclass
@@ -83,7 +95,10 @@ def white_noise(img: torch.Tensor, params: AugmentationParams):
 
 
 def scaled_white_noise(img: torch.Tensor, params: AugmentationParams):
-    noise = torch.randn([params.rng.randint(4, img.shape[-1])] * 2, device=img.device) * params.white_noise_scale
+    noise = (
+        torch.randn([params.rng.randint(4, img.shape[-1])] * 2, device=img.device)
+        * params.white_noise_scale
+    )
     return torch.clamp(img + resize(noise, img.shape[-2:]), 0, None)
 
 
@@ -140,15 +155,15 @@ def make_grid(grid_size=6, batch_size=1, device=torch.device("cpu")):
 
 
 def sample_size_changes(parameters: dict, random_state: random.Random):
-    age = random_state.choice(list(parameters['tps']))
-    tps_sampler = multivariate_t(*parameters['tps'][age])
+    age = random_state.choice(list(parameters["tps"]))
+    tps_sampler = multivariate_t(*parameters["tps"][age], allow_singular=True)
     # NOTE: not sure if this is ok yet
-    height_sampler = multivariate_t(*parameters['height'][age], allow_singular=True)
-    scale_sampler = multivariate_t(*parameters['scale'][age])
+    height_sampler = multivariate_t(*parameters["height"][age], allow_singular=True)
+    scale_sampler = multivariate_t(*parameters["scale"][age])
 
     state = random_state.getstate()[1][0]
     tps = tps_sampler.rvs(random_state=state)
-    tps = tps.reshape(2, 4, 4)
+    tps = tps.reshape(2, int(np.sqrt(len(tps) / 2)), int(np.sqrt(len(tps) / 2)))
     tps = pad_vector(torch.tensor(tps, dtype=torch.float32))
 
     height = np.clip(height_sampler.rvs(random_state=state), 0, None)
@@ -161,17 +176,28 @@ def sample_size_changes(parameters: dict, random_state: random.Random):
 
 
 def age_dependent_tps_xform(frames, parameters: dict, random_state: random.Random):
-    samples = [sample_size_changes(parameters, random_state) for _ in range(len(frames))]
+    samples = [
+        sample_size_changes(parameters, random_state) for _ in range(len(frames))
+    ]
     tps_vector, height, scale_params = zip(*samples)
     tps_vector = torch.transpose(torch.stack(tps_vector), 1, 3).to(frames.device)
 
     grid = make_grid(tps_vector.shape[1], len(frames), device=frames.device)
 
-    kernel, affine = get_tps_transform(grid + tps_vector.reshape(len(frames), -1, 2), grid)
+    kernel, affine = get_tps_transform(
+        grid + tps_vector.reshape(len(frames), -1, 2), grid
+    )
     scaled_frames = scale(frames, torch.cat(scale_params, dim=0).to(frames.device))
-    transformed_frames = warp_image_tps(scaled_frames, grid.to(frames.device), kernel.to(frames.device), affine.to(frames.device))
+    transformed_frames = warp_image_tps(
+        scaled_frames,
+        grid.to(frames.device),
+        kernel.to(frames.device),
+        affine.to(frames.device),
+    )
 
-    height_intermediate = resize(torch.stack(height).unsqueeze(1).to(frames.device), frames.shape[-2:])
+    height_intermediate = resize(
+        torch.stack(height).unsqueeze(1).to(frames.device), frames.shape[-2:]
+    )
 
     out = transformed_frames * height_intermediate
     return out
@@ -205,7 +231,7 @@ def augmentation_clean(frames, params: AugmentationParams):
     return frames * mask
 
 
-# --- augmentation pipeline ---
+# --- augmentation pipeline --- #
 class Augmenter:
     def __init__(self, params: AugmentationParams, wall_noise_path, tps_sampler_path):
         self.params = params
@@ -244,7 +270,6 @@ class Augmenter:
         self.tps_sampling_params = joblib.load(tps_sampler_path)
 
     def __call__(self, data):
-
         # add white noise correlated with scaling
         swnp = self.params.rng.random()
         if self.params.rng.random() < self.params.white_noise_prob:
@@ -253,7 +278,9 @@ class Augmenter:
                 data = white_noise(data, self.params)
 
         if self.params.rng.random() < self.params.tps_warp_prob:
-            data = age_dependent_tps_xform(data, self.tps_sampling_params, self.params.rng)
+            data = age_dependent_tps_xform(
+                data, self.tps_sampling_params, self.params.rng
+            )
 
         ### affine transforms ###
         if self.params.rng.random() < self.params.preserve_aspect_prob:
@@ -324,6 +351,33 @@ class Augmenter:
         return normalize(data)
 
 
+def age_dependent_elastic_xform(frames, parameters: dict, random_state: random.Random):
+    scale_params = []
+    movement_vector = []
+    height_mtx = []
+    for i in range(len(frames)):
+        age = random_state.choice(list(parameters))
+        params = random_state.choice(list(parameters[age].values()))
+        scale_params.append(params["scale_tensor"])
+        movement_vector.append(params["movement_vector"])
+        height_mtx.append(params["height_mtx"])
+    scale_params = torch.tensor(np.array(scale_params), device=frames.device)
+    movement_vector = torch.tensor(np.array(movement_vector), device=frames.device)
+    height_mtx = torch.tensor(np.array(height_mtx), device=frames.device).unsqueeze(1)
+
+    scaled_frames = scale(frames, scale_params)
+    elastic_intermediate = resize(movement_vector, frames.shape[-2:])
+
+    transformed_template = elastic_transform2d(
+        scaled_frames, elastic_intermediate, kernel_size=(53, 53), sigma=(5, 5)
+    )
+    height_intermediate = resize(height_mtx, frames.shape[-2:])
+
+    out = transformed_template * height_intermediate
+    return out
+
+
+# --- curriculum augmentation pipeline --- #
 def tps_sampler_factory(tps_sampler_path):
     tps_sampling_params = joblib.load(tps_sampler_path)
 
@@ -331,6 +385,15 @@ def tps_sampler_factory(tps_sampler_path):
         return age_dependent_tps_xform(data, tps_sampling_params, params.rng)
 
     return tps_sampler
+
+
+def elastic_transform_factory(elastic_path):
+    elastic_params = joblib.load(elastic_path)
+
+    def elastic_transform(data, params: AugmentationParams):
+        return age_dependent_elastic_xform(data, elastic_params, params.rng)
+
+    return elastic_transform
 
 
 def shear_fun(data, params: AugmentationParams):
@@ -363,9 +426,7 @@ def wall_noise_factory(wall_noise_path):
 
     def add_wall_noise(data, params: AugmentationParams):
         inds = params.rng.choices(range(len(wall_noise)), k=len(data))
-        return add_reflection(
-            data, wall_noise[inds].to(data.device).unsqueeze(1)
-        )
+        return add_reflection(data, wall_noise[inds].to(data.device).unsqueeze(1))
 
     return add_wall_noise
 
@@ -418,7 +479,10 @@ def scale_fun(data, params: AugmentationParams):
     )
     iso_scale = augmentation.RandomAffine(
         degrees=0,
-        scale=(min(params.scale_x + params.scale_y), max(params.scale_x + params.scale_y)),
+        scale=(
+            min(params.scale_x + params.scale_y),
+            max(params.scale_x + params.scale_y),
+        ),
         p=1.0,
     )
     if params.rng.random() < params.preserve_aspect_prob:
@@ -426,60 +490,154 @@ def scale_fun(data, params: AugmentationParams):
     return scale(data)
 
 
-class CurriculumPipeline:
-    def __init__(self, rate: float, params: AugmentationParams, block_transitions: list | tuple):
-        '''block_transitions: list of step numbers at which to transition to the next block'''
-        self.transitions = sorted(block_transitions)
-        self.rng = params.rng
-        self.pipeline = [
-            (CurriculumAugmentation(identity_fun, 1, 1, params), 0),
-            (CurriculumAugmentation(white_noise, params.white_noise_prob, rate, params), 1),
-            (CurriculumAugmentation(tps_sampler_factory(params.tps_sampler_path), params.tps_warp_prob, rate, params), 3),
-            (CurriculumAugmentation(scale_fun, params.scale_prob, rate, params), 1),
-            (CurriculumAugmentation(rotation_fun, params.rotation_prob, rate, params), 1),
-            (CurriculumAugmentation(translate_fun, params.translation_prob, rate, params), 1),
-            (CurriculumAugmentation(shear_fun, params.shear_prob, rate, params), 1),
-            (CurriculumAugmentation(height_scale_fun, params.height_scale_prob, rate, params), 1),
-            (CurriculumAugmentation(flip_fun, params.flip_prob, rate, params), 1),
-            (CurriculumAugmentation(elastic_fun, params.random_elastic_prob, rate, params), 2),
-            (CurriculumAugmentation(zoom_unzoom, params.zoom_unzoom_prob, rate, params), 2),
-            (CurriculumAugmentation(wall_noise_factory(params.wall_noise_path), params.wall_reflection_prob, rate, params), 2),
-            (CurriculumAugmentation(white_noise, params.white_noise_prob, rate, params), 1),
-            (CurriculumAugmentation(scaled_white_noise, params.scaled_white_noise_prob, rate, params), 1),
-            (CurriculumAugmentation(min_height_thresholding_fun, params.threshold_prob, rate, params), 2),
-            (CurriculumAugmentation(max_height_thresholding_fun, params.threshold_prob, rate, params), 2),
-            (CurriculumAugmentation(augmentation_clean, params.clean_prob, rate, params), 2),
-            (CurriculumAugmentation(height_offset_fun, params.height_offset_prob, rate, params), 2),
-        ]
-
-    def __call__(self, data: torch.Tensor, step_num: int):
-        for (func, block_num) in self.pipeline:
-            block_frac = np.array([max(step_num, 0) - x for x in self.transitions])
-            block = sum(block_frac > 0)
-            # allow all augmentations during validation by specifying step_num=-1 
-            if block >= block_num or step_num == -1:
-                data = func(data, self.rng, step_num)
-        return normalize(data)
-
-
 class CurriculumAugmentation:
-    def __init__(self, function: Callable, p: float, rate: float, params: AugmentationParams):
+    def __init__(
+        self, function: Callable, p: float, rate: float, params: AugmentationParams
+    ):
         self.fun = function
         self.p = p
         self.params = params
         self.init_step = None
         self.rate = rate
 
-    def __call__(self, data: torch.Tensor, random_state: random.Random, step_num: int):
+    def __call__(self, data: torch.Tensor, random_state: random.Random, step_num: int, function_log: list):
         if self.init_step is None and step_num >= 0:
             self.init_step = step_num
         # run function at probability p if in validation mode
-        if step_num < 0:
-            return self.fun(data, self.params) if random_state.random() < self.p else data
+        if step_num < 0 and random_state.random() < self.p:
+            data = self.fun(data, self.params)
+            function_log.append(self.fun.__name__)
+        elif step_num < 0:
+            return data, function_log
         # in training mode, scale probability of running function linearly from 0 to p every step by rate
-        elif random_state.random() < min(self.p, (step_num - self.init_step) * self.rate * self.p):
-            return self.fun(data, self.params)
-        return data
+        elif random_state.random() < min(
+            self.p, (step_num - self.init_step) * self.rate * self.p
+        ):
+            data = self.fun(data, self.params)
+            function_log.append(self.fun.__name__)
+        return data, function_log
+
+
+class CurriculumPipeline:
+    def __init__(
+        self, rate: float, params: AugmentationParams, block_transitions: list | tuple
+    ):
+        """block_transitions: list of step numbers at which to transition to the next block"""
+        self.transitions = sorted(block_transitions)
+        self.rng = params.rng
+        self.params = params
+        self.pipeline = [
+            (
+                CurriculumAugmentation(
+                    # tps_sampler_factory(params.tps_sampler_path),
+                    elastic_transform_factory(params.tps_sampler_path),
+                    params.tps_warp_prob,
+                    rate,
+                    params,
+                ),
+                3,
+            ),
+            # (CurriculumAugmentation(identity_fun, 1, 1, params), 0),
+            (
+                CurriculumAugmentation(
+                    white_noise, params.white_noise_prob, rate, params
+                ),
+                1,
+            ),
+            (CurriculumAugmentation(shear_fun, params.shear_prob, rate, params), 1),
+            (CurriculumAugmentation(scale_fun, params.scale_prob, rate, params), 1),
+            (
+                CurriculumAugmentation(
+                    rotation_fun, params.rotation_prob, rate, params
+                ),
+                1,
+            ),
+            (
+                CurriculumAugmentation(
+                    translate_fun, params.translation_prob, rate, params
+                ),
+                1,
+            ),
+            (
+                CurriculumAugmentation(
+                    height_scale_fun, params.height_scale_prob, rate, params
+                ),
+                1,
+            ),
+            (CurriculumAugmentation(flip_fun, params.flip_prob, rate, params), 1),
+            (
+                CurriculumAugmentation(
+                    elastic_fun, params.random_elastic_prob, rate, params
+                ),
+                2,
+            ),
+            (
+                CurriculumAugmentation(
+                    zoom_unzoom, params.zoom_unzoom_prob, rate, params
+                ),
+                2,
+            ),
+            (
+                CurriculumAugmentation(
+                    wall_noise_factory(params.wall_noise_path),
+                    params.wall_reflection_prob,
+                    rate,
+                    params,
+                ),
+                2,
+            ),
+            (
+                CurriculumAugmentation(
+                    white_noise, params.white_noise_prob, rate, params
+                ),
+                1,
+            ),
+            (
+                CurriculumAugmentation(
+                    scaled_white_noise, params.scaled_white_noise_prob, rate, params
+                ),
+                1,
+            ),
+            (
+                CurriculumAugmentation(
+                    min_height_thresholding_fun, params.threshold_prob, rate, params
+                ),
+                2,
+            ),
+            (
+                CurriculumAugmentation(
+                    max_height_thresholding_fun, params.threshold_prob, rate, params
+                ),
+                2,
+            ),
+            (
+                CurriculumAugmentation(
+                    augmentation_clean, params.clean_prob, rate, params
+                ),
+                2,
+            ),
+            (
+                CurriculumAugmentation(
+                    height_offset_fun, params.height_offset_prob, rate, params
+                ),
+                2,
+            ),
+        ]
+
+    def __call__(self, data: torch.Tensor, step_num: int):
+        function_log = []
+        for func, block_num in self.pipeline:
+            block_frac = np.array([max(step_num, 0) - x for x in self.transitions])
+            block = sum(block_frac > 0)
+            # allow all augmentations during validation by specifying step_num=-1
+            if block >= block_num or step_num == -1:
+                # hard-coding certain augmentation relationships so that they don't
+                # overlap
+                if 'scale_fun' == func.fun.__name__ and any('elastic' in x for x in function_log) and self.rng.random() < self.params.scale_and_warp_prob:
+                    data, function_log = func(data, self.rng, step_num, function_log)
+                else:
+                    data, function_log = func(data, self.rng, step_num, function_log)
+        return normalize(data)
 
 
 # --- dataset pipeline --- #

@@ -8,9 +8,9 @@ params.model_folder = "/n/groups/datta/win/longtogeny/size_norm/models/bottlenec
 process transform_data {
     label 'gpu'
     memory 30.GB
-    time { 15.m * task.attempt }
+    time { 45.m * task.attempt }
     conda aging_env
-    maxRetries 1
+    maxRetries 2
 
     input:
     val model_path
@@ -34,9 +34,9 @@ process transform_data {
 process transform_dynamics_data {
     label 'gpu'
     memory 30.GB
-    time { 30.m * task.attempt }
+    time { 45.m * task.attempt }
     conda aging_env
-    maxRetries 1
+    maxRetries 2
 
     input:
     val model_path
