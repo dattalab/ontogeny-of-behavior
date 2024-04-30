@@ -3,7 +3,6 @@ import optax
 import jax.numpy as jnp
 import numpy as np
 import pandas as pd
-import scipy.optimize
 import tensorflow_probability.substrates.jax as tfp
 from copy import deepcopy
 from tqdm.auto import tqdm
@@ -100,13 +99,10 @@ def initialize_params(
         return params
 
     # spline_class, _ = create_splines(age_samples, df=n_splines)
-    # scale = 0.8
-
     # A = spline_class.transform(age_normalizer(age)).T
 
     # theta_list = []
     # for i in range(n_syllables):
-    #     # _theta, _ = scipy.optimize.nnls(A.T, (counts + 1)[:, i] * scale)
     #     _theta = np.linalg.lstsq(A.T, (counts + 1)[:, i] * scale, rcond=-1)[0]
     #     theta_list.append(_theta)
     # theta_list = np.array(theta_list).T
@@ -164,13 +160,40 @@ def mask_data(counts, concentrations, hypparams):
     return counts, concentrations
 
 
+### ~~~~~~~~~~~ write a "linear" model in this framework ~~~~~~~~~~~ ###
+
+def model_fun_v0(params, bases, age_samples, true_age, counts, hypparams):
+    '''
+    parameter shapes:
+        age_samples: shape (n_ages,)
+        true_age: shape (n_sessions,)
+        counts: shape (n_sessions, n_syllables)
+    '''
+    pred_counts = (
+        params["bio_basis_weights"] @ jnp.stack([age_samples, jnp.ones_like(age_samples)])
+    )  # shape (n_syllables, n_ages)
+
+    pred_counts = jnp.tile(pred_counts.T[None], (len(counts), 1, 1))
+    # shape (n_sessions, n_ages, n_syllables)
+
+    counts, pred_counts = mask_data(counts, pred_counts, hypparams)
+
+    age_probs = tfp.distributions.Normal(
+        loc=counts[:, None], scale=20
+    ).log_prob(pred_counts)
+
+    gauss_probs = tfp.distributions.Normal(
+        loc=true_age[:, None], scale=hypparams["age_sd"], name="Normal"
+    ).log_prob(age_samples[None])
+
+
+    return age_probs.sum(axis=-1) + gauss_probs
+
+
+# ~~~~~~~~~~~ write the first spline regression model ~~~~~~~~~~~ #
 def model_fun_v1(params, bases, age_samples, true_age, counts, hypparams):
-    # concentrations = (
-    #     jnp.exp(params["bio_basis_weights"]) @ bases["bio"]
-    # )  # shape (n_syllables, n_ages)
     concentrations = (
         jnp.exp(params["bio_basis_weights"] @ bases["bio"])
-        # params["bio_basis_weights"] @ bases["bio"]
     )  # shape (n_syllables, n_ages)
 
     concentrations = jnp.tile(concentrations.T[None], (len(counts), 1, 1))
@@ -216,16 +239,7 @@ def neg_log_likelihood(
 
     params_ll = 0
 
-    # use the random-walk prior if available
-    if hypparams.get("use_rw_prior", False):
-        def calculate_prior(i):
-            mu = jnp.exp(params["bio_basis_weights"][i])
-            val = jnp.exp(params["bio_basis_weights"][i + 1])
-            return tfp.distributions.Normal(loc=mu, scale=hypparams["rw_sd"] / jnp.sqrt(hypparams["n_splines"] - 1)).log_prob(val)
-
-        prior = jax.lax.map(calculate_prior, jnp.arange(hypparams["n_splines"] - 1))
-        params_ll = prior.sum()
-    elif "bio_params_sd" in hypparams:
+    if "bio_params_sd" in hypparams and hypparams['bio_params_sd'] > 0:
         params_probs = tfp.distributions.Normal(
             loc=0, scale=hypparams["bio_params_sd"]
         ).log_prob(params["bio_basis_weights"])
@@ -285,7 +299,6 @@ def get_biological_age(
     """Works with all models. Returns the predicted biological age."""
     hypparams = dissoc(hypparams, "mask")
     log_probs = model_fun(params, bases, age_samples, chron_age, counts, hypparams)
-    # log_probs = jax.nn.softmax(log_probs, axis=1)
     predicted_bio_ages = age_samples[jnp.argmax(log_probs, axis=1)]
     return age_unnormalizer(predicted_bio_ages)
 
@@ -309,45 +322,14 @@ def expected_syllable_frequencies(z, theta_age, B_age):
     return expected_frequences
 
 
-def local_derivative(z, theta_age, B_age):
-    """Compute the local derivative of the model with respect to the animal's
-    chronological age or biological age. Can also be normalized to syllable usage."""
-    fun = partial(
-        expected_syllable_frequencies,
-        theta_age=theta_age,
-        B_age=B_age,
-    )
-    J = jax.jacfwd(fun)(z)
-    exp_freqs = fun(z)
-
-    # J has shape (M, )
-    # J[i] = d expected_syllable_frequencies[i] / d bio_age
-
-    fold_dependence = J / exp_freqs * z[None]
-    return fold_dependence
-
-
-def compute_local_derivative(ages, age_normalizer, params, n_splines):
-    data = age_normalizer(ages)
-    theta_age = params["bio_basis_weights"]
-    age_samples = np.linspace(0, 1, 1000)
-    _, B_age = create_splines(age_samples, df=n_splines)
-
-    fold_fun = partial(local_derivative, theta_age=jnp.exp(theta_age), B_age=B_age)
-    return jax.vmap(fold_fun, in_axes=(0,))(data)
-
-
 ### ~~~~~~~~~~~ version 2 of the model - add size basis ~~~~~~~~~~~ ###
 
 
 def model_fun_v2(params, bases, age_samples, true_age, counts, hypparams):
     bio_concentrations = (
-        # jnp.exp(params["bio_basis_weights"]) @ bases["bio"]
         params["bio_basis_weights"] @ bases["bio"]
     )  # shape (n_syllables, n_ages)
     size_concentrations = (
-        # jnp.exp(params["size_basis_weights"]) @ bases["size"]
-        # params["size_basis_weights"] @ bases["size"]
         params["size_slope"] @ bases["size"]  # make sure bases["size"] is shape (1, n_sessions)
     )  # shape (n_syllables, n_sessions)
 
@@ -356,7 +338,6 @@ def model_fun_v2(params, bases, age_samples, true_age, counts, hypparams):
         :, None, :
     ]  # shape (n_sessions, 1, n_syllables)
 
-    # concentrations = bio_concentrations + size_concentrations
     concentrations = jnp.exp(bio_concentrations + size_concentrations)
 
     log_probs = compute_distribution_logprobs(
@@ -366,80 +347,14 @@ def model_fun_v2(params, bases, age_samples, true_age, counts, hypparams):
     return log_probs
 
 
-def expected_syllable_frequencies_v2(z, theta_age, theta_size, B_age, B_size):
-    bio_age, size = z
-
-    def spline_interpolation(x, B):
-        return jnp.interp(x, jnp.linspace(0, 1, 1000), B)
-
-    spline_interpolation = jax.vmap(spline_interpolation, in_axes=(None, 0))
-
-    B_at_age = spline_interpolation(bio_age, B_age)  # shape (K_age)
-    bio_concentrations = jnp.dot(theta_age, B_at_age)  # shape (M)
-
-    B_at_size = spline_interpolation(size, B_size)  # shape (K_size)
-    size_concentrations = jnp.dot(theta_size, B_at_size)  # shape (M)
-
-    concentrations = bio_concentrations + size_concentrations  # shape (M)
-
-    # expected syllable frequencies
-    expected_frequences = concentrations / jnp.sum(concentrations)
-
-    return expected_frequences
-
-
-def local_derivative_v2(z, theta_age, theta_size, B_age, B_size):
-    fun = partial(
-        expected_syllable_frequencies_v2,
-        theta_age=theta_age,
-        theta_size=theta_size,
-        B_age=B_age,
-        B_size=B_size,
-    )
-    J = jax.jacfwd(fun)(z)
-    exp_freqs = fun(z)
-
-    # J has shape (M, 2)
-    # J[i,0] = d expected_syllable_frequencies[i] / d bio_age
-    # J[i,1] = d expected_syllable_frequencies[i] / d size
-
-    fold_dependence = J / exp_freqs[:, None] * z[None]
-    # fold_dependence = J * z[None]
-    return fold_dependence
-
-
-def compute_local_derivative_v2(
-    ages, sizes, age_normalizer, params, n_splines, n_size_splines
-):
-    data = jnp.stack([age_normalizer(ages), sizes], axis=1)
-    theta_age = params["bio_basis_weights"]
-    theta_size = params["size_basis_weights"]
-
-    age_samples = np.linspace(0, 1, 1000)
-    _, B_age = create_splines(age_samples, df=n_splines)
-    _, B_size = create_splines(age_samples, df=n_size_splines)
-
-    fold_fun = partial(
-        local_derivative_v2,
-        theta_age=jnp.exp(theta_age),
-        theta_size=jnp.exp(theta_size),
-        B_age=B_age,
-        B_size=B_size,
-    )
-    return jax.vmap(fold_fun, in_axes=(0,))(data)
-
-
 ### ~~~~~~~~~~~ version 3 of the model - add size basis and individuality terms ~~~~~~~~~~~ ###
 
 
 def model_fun_v3(params, bases, age_samples, true_age, counts, hypparams):
     bio_concentrations = (
-        # jnp.exp(params["bio_basis_weights"]) @ bases["bio"]
         params["bio_basis_weights"] @ bases["bio"]
     )  # shape (n_syllables, n_ages)
     size_concentrations = (
-        # jnp.exp(params["size_basis_weights"]) @ bases["size"]
-        # params["size_basis_weights"] @ bases["size"]
         params["size_slope"] @ bases["size"]  # make sure bases["size"] is shape (1, n_sessions)
     )  # shape (n_syllables, n_sessions)
 
@@ -455,7 +370,6 @@ def model_fun_v3(params, bases, age_samples, true_age, counts, hypparams):
         :, None, :
     ]  # shape (n_sessions, 1, n_syllables)
 
-    # concentrations = bio_concentrations + size_concentrations + jnp.exp(individual_biases)
     concentrations = jnp.exp(bio_concentrations + size_concentrations + individual_biases)
 
     log_probs = compute_distribution_logprobs(
@@ -470,12 +384,9 @@ def model_fun_v3(params, bases, age_samples, true_age, counts, hypparams):
 
 def model_fun_v4(params, bases, age_samples, true_age, counts, hypparams):
     bio_concentrations = (
-        # jnp.exp(params["bio_basis_weights"]) @ bases["bio"]
         params["bio_basis_weights"] @ bases["bio"]
     )  # shape (n_syllables, n_ages)
     size_concentrations = (
-        # jnp.exp(params["size_basis_weights"]) @ bases["size"]
-        # params["size_basis_weights"] @ bases["size"]
         params["size_slope"] @ bases["size"]
     )  # shape (n_syllables, n_sessions)
 
@@ -494,7 +405,6 @@ def model_fun_v4(params, bases, age_samples, true_age, counts, hypparams):
     ]  # shape (n_sessions, 1, n_syllables)
     individual_biases = individual_biases[:, None, :].T  # shape (n_sessions, n_ages, n_syllables)
 
-    # concentrations = bio_concentrations + size_concentrations + (jnp.exp(individual_biases) * bias_scale[..., None])
     concentrations = jnp.exp(bio_concentrations + size_concentrations + individual_biases * bias_scale[..., None])
 
     log_probs = compute_distribution_logprobs(
@@ -508,17 +418,12 @@ def model_fun_v4(params, bases, age_samples, true_age, counts, hypparams):
 
 def model_fun_v5(params, bases, age_samples, true_age, counts, hypparams):
     bio_concentrations = (
-        # jnp.exp(params["bio_basis_weights"]) @ bases["bio"]
         params["bio_basis_weights"] @ bases["bio"]
     )  # shape (n_syllables, n_ages)
     size_concentrations = (
-        # jnp.exp(params["size_basis_weights"]) @ bases["size"]
-        # params["size_basis_weights"] @ bases["size"]
         params["size_slope"] @ bases["size"]
     )  # shape (n_syllables, n_sessions)
 
-    # bias_scale = jnp.exp(params["development_weights"]) @ bases["development"]  # shape (1, n_ages)
-    # bias_scale = params["development_weights"] @ bases["development"]  # shape (1, n_ages)
     bias_scale = jnp.exp(params["development_weights"] @ bases["development"])  # shape (1, n_ages)
 
     individual_biases = (
@@ -531,7 +436,6 @@ def model_fun_v5(params, bases, age_samples, true_age, counts, hypparams):
     ]  # shape (n_sessions, 1, n_syllables)
     individual_biases = individual_biases[:, None, :].T  # shape (n_sessions, n_ages, n_syllables)
 
-    # concentrations = bio_concentrations + size_concentrations + (jnp.exp(individual_biases) * bias_scale[..., None])
     concentrations = jnp.exp(bio_concentrations + size_concentrations + individual_biases * bias_scale[..., None])
 
     log_probs = compute_distribution_logprobs(
@@ -560,12 +464,6 @@ def model_setup(features: dict, hypparams: dict, model_version: int) -> InitComp
     true_age = age_normalizer(features["ages"])
 
     if model_version > 1:
-        # size_normalizer, _ = age_normalizer_factory(
-        #     min_age=features["sizes"].min(), max_age=features["sizes"].max()
-        # )
-        # sizes = size_normalizer(features["sizes"])
-        # spline_class, _ = create_splines(age_samples, df=hypparams["n_size_splines"])
-        # bases["size"] = spline_class.transform(sizes).T
         bases["size"] = features["sizes"][None]
 
     init, bases = _initialize_parameters(model_version, bases, features, hypparams)
@@ -881,22 +779,6 @@ def fit_model(features: dict, hypparams: dict, model_version: int, init_componen
             except ValueError:
                 print(np.isnan(predicted_counts).sum())
 
-            # heldout_concentrations = concentrations[
-            #     hypparams["heldout_mask"][0][..., None],
-            #     jnp.arange(concentrations.shape[1])[None, :, None],
-            #     hypparams["heldout_mask"][1][:, None, :],
-            # ]
-
-            # heldout_concs = []
-            # for i in range(len(bio_ages)):
-            #     idx = i if len(concentrations) > 1 else 0
-            #     _concs = concentration_interpolation(norm_bio_age[idx], heldout_concentrations[idx])
-            #     heldout_concs.append(_concs)
-            # heldout_concs = jnp.array(heldout_concs)
-
-            # heldout_pred_counts = expected_counts(heldout_concs, heldout_counts.sum(1))
-
-            # extra_output["heldout_r2_total"] = r2_score(heldout_counts, heldout_pred_counts, multioutput="variance_weighted")
     else:
         predicted_counts = concs
         if "heldout_mask" in hypparams:
@@ -941,14 +823,11 @@ def compute_concentration_components(params, model_version, init_components: Ini
         concentrations["bio"] = bio_concentrations
     if model_version > 0:
         bio_concentrations = (
-            # jnp.exp(params["bio_basis_weights"]) @ init_components.bases["bio"]
             params["bio_basis_weights"] @ init_components.bases["bio"]
         )  # shape (n_syllables, n_ages)
         concentrations["bio"] = bio_concentrations
     if model_version > 1:
         size_concentrations = (
-            # jnp.exp(params["size_basis_weights"]) @ init_components.bases["size"]
-            # params["size_basis_weights"] @ init_components.bases["size"]
             params["size_slope"] @ init_components.bases["size"]
         )  # shape (n_syllables, n_sessions)
         concentrations["size"] = size_concentrations
@@ -956,7 +835,6 @@ def compute_concentration_components(params, model_version, init_components: Ini
         individual_biases = (
             raise_dim(params["individual_biases"], axis=1) @ init_components.bases["individual"]
         )  # shape (n_syllables, n_sessions)
-        # concentrations["indiv"] = jnp.exp(individual_biases)  # multiplied with total concentrations
         concentrations["indiv"] = individual_biases  # multiplied with total concentrations
     if model_version == 4:
         bias_scale = jax.nn.sigmoid(
@@ -965,7 +843,6 @@ def compute_concentration_components(params, model_version, init_components: Ini
         concentrations["indiv"] = concentrations["indiv"][:, None, :]
         concentrations["indiv_scale"] = bias_scale.squeeze()
     elif model_version == 5:
-        # bias_scale = jnp.exp(params["development_weights"]) @ init_components.bases["development"]
         bias_scale = jnp.exp(params["development_weights"] @ init_components.bases["development"])
         concentrations["indiv"] = concentrations["indiv"][:, None, :]
         concentrations["indiv_scale"] = bias_scale.squeeze()
@@ -991,31 +868,3 @@ def compute_concentrations(params, model_version, init_components) -> tuple[jnp.
         return concentrations, concentration_components
     return jnp.exp(concentrations), concentration_components
     
-### ~~~~~~~~~~~ write a "linear" model in this framework ~~~~~~~~~~~ ###
-
-def model_fun_v0(params, bases, age_samples, true_age, counts, hypparams):
-    '''
-    parameter shapes:
-        age_samples: shape (n_ages,)
-        true_age: shape (n_sessions,)
-        counts: shape (n_sessions, n_syllables)
-    '''
-    pred_counts = (
-        params["bio_basis_weights"] @ jnp.stack([age_samples, jnp.ones_like(age_samples)])
-    )  # shape (n_syllables, n_ages)
-
-    pred_counts = jnp.tile(pred_counts.T[None], (len(counts), 1, 1))
-    # shape (n_sessions, n_ages, n_syllables)
-
-    counts, pred_counts = mask_data(counts, pred_counts, hypparams)
-
-    age_probs = tfp.distributions.Normal(
-        loc=counts[:, None], scale=20
-    ).log_prob(pred_counts)
-
-    gauss_probs = tfp.distributions.Normal(
-        loc=true_age[:, None], scale=hypparams["age_sd"], name="Normal"
-    ).log_prob(age_samples[None])
-
-
-    return age_probs.sum(axis=-1) + gauss_probs
