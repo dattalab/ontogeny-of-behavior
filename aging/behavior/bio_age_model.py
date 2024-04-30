@@ -6,6 +6,7 @@ import pandas as pd
 import scipy.optimize
 import tensorflow_probability.substrates.jax as tfp
 from copy import deepcopy
+from tqdm.auto import tqdm
 from dataclasses import dataclass
 from sklearn.metrics import r2_score
 from typing import Callable, Optional
@@ -98,18 +99,20 @@ def initialize_params(
         params = {"bio_basis_weights": jnp.array(weights)}
         return params
 
-    spline_class, _ = create_splines(age_samples, df=n_splines)
-    scale = 0.2
+    # spline_class, _ = create_splines(age_samples, df=n_splines)
+    # scale = 0.8
 
-    A = spline_class.transform(age_normalizer(age)).T
+    # A = spline_class.transform(age_normalizer(age)).T
 
-    theta_list = []
-    for i in range(n_syllables):
-        _theta, _ = scipy.optimize.nnls(A.T, (counts + 1)[:, i] * scale)
-        theta_list.append(_theta)
-    theta_list = np.array(theta_list).T
-    theta_list = np.where(theta_list == 0, 1e-3, theta_list)
-    params = {"bio_basis_weights": jnp.log(jnp.array(theta_list.T))}
+    # theta_list = []
+    # for i in range(n_syllables):
+    #     # _theta, _ = scipy.optimize.nnls(A.T, (counts + 1)[:, i] * scale)
+    #     _theta = np.linalg.lstsq(A.T, (counts + 1)[:, i] * scale, rcond=-1)[0]
+    #     theta_list.append(_theta)
+    # theta_list = np.array(theta_list).T
+    # theta_list = np.where(theta_list == 0, 1e-3, theta_list)
+    # params = {"bio_basis_weights": jnp.log(jnp.array(theta_list.T))}
+    params = {"bio_basis_weights": jnp.zeros((n_syllables, n_splines))}
 
     # handles size params for models v2, v3, and v4
     if n_size_splines is not None:
@@ -211,11 +214,23 @@ def neg_log_likelihood(
     if heldout:
         return -total_lls
 
-    params_probs = tfp.distributions.Normal(
-        loc=0, scale=hypparams["bio_params_sd"]
-    ).log_prob(params["bio_basis_weights"])
+    params_ll = 0
 
-    params_ll = params_probs.sum()
+    # use the random-walk prior if available
+    if hypparams.get("use_rw_prior", False):
+        def calculate_prior(i):
+            mu = jnp.exp(params["bio_basis_weights"][i])
+            val = jnp.exp(params["bio_basis_weights"][i + 1])
+            return tfp.distributions.Normal(loc=mu, scale=hypparams["rw_sd"] / jnp.sqrt(hypparams["n_splines"] - 1)).log_prob(val)
+
+        prior = jax.lax.map(calculate_prior, jnp.arange(hypparams["n_splines"] - 1))
+        params_ll = prior.sum()
+    elif "bio_params_sd" in hypparams:
+        params_probs = tfp.distributions.Normal(
+            loc=0, scale=hypparams["bio_params_sd"]
+        ).log_prob(params["bio_basis_weights"])
+
+        params_ll = params_probs.sum()
 
     # handles models v2, v3, and v4 which incorporate animal size
     # TODO: change
@@ -424,7 +439,8 @@ def model_fun_v3(params, bases, age_samples, true_age, counts, hypparams):
     )  # shape (n_syllables, n_ages)
     size_concentrations = (
         # jnp.exp(params["size_basis_weights"]) @ bases["size"]
-        params["size_basis_weights"] @ bases["size"]
+        # params["size_basis_weights"] @ bases["size"]
+        params["size_slope"] @ bases["size"]  # make sure bases["size"] is shape (1, n_sessions)
     )  # shape (n_syllables, n_sessions)
 
     individual_biases = (
@@ -459,7 +475,8 @@ def model_fun_v4(params, bases, age_samples, true_age, counts, hypparams):
     )  # shape (n_syllables, n_ages)
     size_concentrations = (
         # jnp.exp(params["size_basis_weights"]) @ bases["size"]
-        params["size_basis_weights"] @ bases["size"]
+        # params["size_basis_weights"] @ bases["size"]
+        params["size_slope"] @ bases["size"]
     )  # shape (n_syllables, n_sessions)
 
     bias_scale = jax.nn.sigmoid(
@@ -496,11 +513,13 @@ def model_fun_v5(params, bases, age_samples, true_age, counts, hypparams):
     )  # shape (n_syllables, n_ages)
     size_concentrations = (
         # jnp.exp(params["size_basis_weights"]) @ bases["size"]
-        params["size_basis_weights"] @ bases["size"]
+        # params["size_basis_weights"] @ bases["size"]
+        params["size_slope"] @ bases["size"]
     )  # shape (n_syllables, n_sessions)
 
     # bias_scale = jnp.exp(params["development_weights"]) @ bases["development"]  # shape (1, n_ages)
-    bias_scale = params["development_weights"] @ bases["development"]  # shape (1, n_ages)
+    # bias_scale = params["development_weights"] @ bases["development"]  # shape (1, n_ages)
+    bias_scale = jnp.exp(params["development_weights"] @ bases["development"])  # shape (1, n_ages)
 
     individual_biases = (
         raise_dim(params["individual_biases"], axis=1) @ bases["individual"]
@@ -618,14 +637,14 @@ def _initialize_age_basis(hypparams):
 
 # add masking-based cross-validation
 def masked_xval(
-    features: dict, hypparams: dict, model_version: int, n_repeats: int, seed: int = 3
+    features: dict, hypparams: dict, model_version: int, n_repeats: int, seed: int = 3, disable_tqdm: bool = False
 ):
 
     rng = np.random.RandomState(seed)
     init_components = model_setup(features, hypparams, model_version)
 
     output = {}
-    for i in range(n_repeats):
+    for i in tqdm(range(n_repeats), disable=disable_tqdm):
         hypparams["mask"], hypparams["heldout_mask"] = create_masks(
             hypparams["n_keep_sylls"],
             hypparams["n_syllables"],
@@ -753,7 +772,7 @@ def stratified_xval(
             "true_ages": age_unnormalizer(test_true_age),
             "test_idx": test,
         }
-    
+
     return output
 
 
@@ -772,14 +791,16 @@ def compute_heldout_r2(counts, predicted_counts, heldout_mask):
     total_mask[heldout_mask] = 1
 
     reorganized_counts = np.zeros_like(counts)
-    reorganized_counts[heldout_mask] = predicted_counts
+    reorganized_counts[heldout_mask] = predicted_counts[heldout_mask]
+
+    keep_sylls = total_mask.sum(axis=0) > 3
 
     r2s = []
     _vars = []
-    for syllable in range(counts.shape[1]):
+    for syllable in np.where(keep_sylls)[0]:
         _r2 = r2_score(counts[total_mask[:, syllable], syllable], reorganized_counts[total_mask[:, syllable], syllable])
         r2s.append(_r2)
-        _var = np.square(counts[total_mask[:, syllable], syllable] - np.mean(counts[total_mask[:, syllable], syllable])).sum(axis=0)
+        _var = np.var(counts[total_mask[:, syllable], syllable]) * total_mask[:, syllable].sum()
         _vars.append(_var)
     
     weighted_r2 = np.average(r2s, weights=_vars)
@@ -852,26 +873,30 @@ def fit_model(features: dict, hypparams: dict, model_version: int, init_componen
         if "heldout_mask" in hypparams:
             heldout_counts = features["counts"][hypparams["heldout_mask"]]
 
-            extra_output = {
-                "heldout_r2_total_v2": r2_score(heldout_counts, predicted_counts[hypparams["heldout_mask"]], multioutput="variance_weighted"),
-            }
+            try:
+                extra_output = {
+                    "heldout_r2_total_v2": r2_score(heldout_counts, predicted_counts[hypparams["heldout_mask"]], multioutput="variance_weighted"),
+                    "heldout_r2_total_v3": compute_heldout_r2(features["counts"], predicted_counts, hypparams["heldout_mask"])[1]
+                }
+            except ValueError:
+                print(np.isnan(predicted_counts).sum())
 
-            heldout_concentrations = concentrations[
-                hypparams["heldout_mask"][0][..., None],
-                jnp.arange(concentrations.shape[1])[None, :, None],
-                hypparams["heldout_mask"][1][:, None, :],
-            ]
+            # heldout_concentrations = concentrations[
+            #     hypparams["heldout_mask"][0][..., None],
+            #     jnp.arange(concentrations.shape[1])[None, :, None],
+            #     hypparams["heldout_mask"][1][:, None, :],
+            # ]
 
-            heldout_concs = []
-            for i in range(len(bio_ages)):
-                idx = i if len(concentrations) > 1 else 0
-                _concs = concentration_interpolation(norm_bio_age[idx], heldout_concentrations[idx])
-                heldout_concs.append(_concs)
-            heldout_concs = jnp.array(heldout_concs)
+            # heldout_concs = []
+            # for i in range(len(bio_ages)):
+            #     idx = i if len(concentrations) > 1 else 0
+            #     _concs = concentration_interpolation(norm_bio_age[idx], heldout_concentrations[idx])
+            #     heldout_concs.append(_concs)
+            # heldout_concs = jnp.array(heldout_concs)
 
-            heldout_pred_counts = expected_counts(heldout_concs, heldout_counts.sum(1))
+            # heldout_pred_counts = expected_counts(heldout_concs, heldout_counts.sum(1))
 
-            extra_output["heldout_r2_total"] = r2_score(heldout_counts, heldout_pred_counts, multioutput="variance_weighted")
+            # extra_output["heldout_r2_total"] = r2_score(heldout_counts, heldout_pred_counts, multioutput="variance_weighted")
     else:
         predicted_counts = concs
         if "heldout_mask" in hypparams:
@@ -938,12 +963,12 @@ def compute_concentration_components(params, model_version, init_components: Ini
             params["development_weights"] @ jnp.stack([init_components.age_samples, jnp.ones_like(init_components.age_samples)], axis=0)
         )  # shape (1, n_ages)
         concentrations["indiv"] = concentrations["indiv"][:, None, :]
-        concentrations["indiv_scale"] = bias_scale.flatten()
+        concentrations["indiv_scale"] = bias_scale.squeeze()
     elif model_version == 5:
         # bias_scale = jnp.exp(params["development_weights"]) @ init_components.bases["development"]
-        bias_scale = params["development_weights"] @ init_components.bases["development"]
+        bias_scale = jnp.exp(params["development_weights"] @ init_components.bases["development"])
         concentrations["indiv"] = concentrations["indiv"][:, None, :]
-        concentrations["indiv_scale"] = bias_scale.flatten()
+        concentrations["indiv_scale"] = bias_scale.squeeze()
 
     return concentrations
 
