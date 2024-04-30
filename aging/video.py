@@ -57,7 +57,8 @@ def write_movie_av(
 
     with iio.imopen(fname, "w", plugin="pyav") as file:
         # set pix_fmt
-        file.init_video_stream("libx264", fps=fps, pixel_format="yuv420p")
+        file.init_video_stream("libx265", fps=fps, pixel_format="yuv420p")
+        file._video_stream.options = {'crf': '30', 'preset': 'fast', 'vtag': 'hvc1'}
 
         for i, frame in enumerate(map(np.nan_to_num, data)):
             img = np.uint8(cmap(np.clip((frame - data_min) / scale, 0, 1)) * 255)
