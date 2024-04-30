@@ -12,7 +12,8 @@ IMG_KWARGS = dict(aspect='auto', interpolation='none')
 ontogeny_age_colors = ['#DADAEB', '#6A51A3']
 ONTOGENY_AGE_CMAP = sns.blend_palette(ontogeny_age_colors, as_cmap=True)
 
-_colors = ['#ccece6','#99d8c9','#66c2a4','#41ae76','#238b45','#006d2c']
+# _colors = ['#ccece6','#99d8c9','#66c2a4','#41ae76','#238b45','#006d2c']
+_colors = ['#DADAEB','#6A51A3']
 LONGTOGENY_AGE_CMAP = sns.blend_palette(_colors, as_cmap=True)
 
 @dataclass
@@ -39,7 +40,7 @@ def format_plots():
         "pdf.fonttype": 42,
         "figure.figsize": (3, 3),
         "font.family": "sans-serif",
-        # "font.sans-serif": "Helvetica",
+        "font.sans-serif": "Helvetica",
         "mathtext.fontset": "custom",
         "mathtext.rm": "Liberation Sans",
         "mathtext.it": "Liberation Sans:italic",
@@ -55,6 +56,7 @@ def format_plots():
         'svg.fonttype': 'none',
         'lines.linewidth': 1,
         'axes.linewidth': 0.5,
+        "axes.unicode_minus": False,
     }
 
     # all in points
@@ -66,6 +68,7 @@ def format_plots():
         "xtick.labelsize": 6,
         "ytick.labelsize": 6,
         "legend.fontsize": 6,
+        "legend.title_fontsize": 6,
         "xtick.major.size": 1.75,
         "ytick.major.size": 1.75,
         "xtick.minor.size": 1.75,
