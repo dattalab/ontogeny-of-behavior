@@ -3,7 +3,12 @@ def aging_env = "$HOME/miniconda3/envs/aging"
 def moseq_env = "$HOME/miniconda3/envs/moseq2-app"
 
 params.size_norm_name = "win_size_norm_frames_v7"
-params.snn_path = ""
+params.snn_path = "/n/groups/datta/win/longtogeny/size_norm/models/bottleneck_optimization_00/stage_06/8a4a38f8-6d43-4df4-988e-8d17402bb23c/model.pt"
+//params.size_norm_name = "win_size_norm_frames_v8"
+//params.snn_path = "/n/groups/datta/win/longtogeny/size_norm/models/freeze_decoder_00/stage_09/7b96ec7e-f894-4391-8c39-f0cb8d7dd516/model.pt"
+params.config_name = "config-2024-04-25"
+params.proc_name = "proc-2024-04-25"
+params.force_extract = 0
 
 process find_extractable_files {
     executor "local"
@@ -22,7 +27,10 @@ process find_extractable_files {
 
     with open("extractable_files.txt", "w") as f:
         for exp, v in files.items():
-            filtered_files = list(multi_filter(no_depth_doubles, not_extracted, seq=v))
+            if bool(${params.force_extract}):
+                filtered_files = list(filter(no_depth_doubles, v))
+            else:
+                filtered_files = list(multi_filter(no_depth_doubles, not_extracted, seq=v))
             if len(filtered_files) > 0:
                 f.write("\\n".join(map(str, filtered_files)))
                 f.write("\\n")
@@ -31,7 +39,7 @@ process find_extractable_files {
 
 process extract {
     label "short"
-    memory 10.GB
+    memory 13.GB
     cpus 1
     time { 40.m * task.attempt }
     maxRetries 1
@@ -46,7 +54,7 @@ process extract {
     script:
     """
     {
-    moseq2-extract extract "${depth_file}" --config-file "/n/groups/datta/win/longtogeny/data/extractions/config.yaml"
+    moseq2-extract extract "${depth_file}" --config-file "/n/groups/datta/win/longtogeny/data/extractions/${params.config_name}.yaml" --output-dir "${params.proc_name}"
     } || {
     echo "Extract command for ${depth_file} did not work"
     }
@@ -66,7 +74,7 @@ process compress {
 
     script:
     """
-    moseq2-extract convert-raw-to-avi "${depth_file}" --delete
+    moseq2-extract convert-raw-to-avi "${depth_file}" --delete || true
     """
 }
 
@@ -100,7 +108,7 @@ process find_files_to_normalize {
 
 process size_normalize {
     label "gpu"
-    memory 8.GB
+    memory 12.GB
     time { 35.m * task.attempt }
     maxRetries 1
     conda aging_env
@@ -140,8 +148,6 @@ workflow {
         .flatten()
         .filter { it != "" && it != null && it != "\n" }
     files = extract(files)
-    avi_files = files.filter { it.endsWith(".dat") }
-    compress(avi_files)
     // collect extractions, because they won't affect output of this find function
     norm_files = find_files_to_normalize(files.collect())
     norm_files = norm_files.map { it.readLines() }
@@ -149,4 +155,8 @@ workflow {
         .filter { it != "" && it != null && it != "\n" }
         .collate(25)
     size_normalize(norm_files)
+
+    // finish with the compressions
+    // avi_files = files.filter { it.endsWith(".dat") }
+    // compress(avi_files)
 }

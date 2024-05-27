@@ -3,6 +3,8 @@ def moseq_env = "$HOME/miniconda3/envs/moseq2-app"
 
 params.moseq_folder = "/n/groups/datta/win/longtogeny/data/ontogeny/version_11"
 params.size_norm_name = "win_size_norm_frames_v7"
+params.df_version = 0
+params.old = 1
 
 process organize_extractions {
     executor 'local'
@@ -52,7 +54,7 @@ process apply_pca {
 process apply_moseq_model {
     label "gpu"
     memory 15.GB
-    time 45.m
+    time { 60.m * task.attempt }
     conda "$HOME/miniconda3/envs/jax-moseq-og"
     maxRetries 2
 
@@ -99,11 +101,11 @@ process create_dataframe {
     cpus 11
     memory {
         if (experiment.contains("longtogeny_v2"))
-            return 80.GB
+            return 100.GB
         else if (experiment.contains("longtogeny"))
-            return 75.GB
+            return 90.GB
         else if (experiment.contains("ontogeny"))
-            return 25.GB
+            return 40.GB
         else
             return 50.GB
     }
@@ -125,10 +127,13 @@ process create_dataframe {
         add_mouse_id, corrections, mouse_filter
     )
 
+    df_version = int(${params.df_version})
+
     df = aggregate_into_dataframe(
         "${experiment}",
         "${params.moseq_folder}",
-        "${params.size_norm_name}"
+        "${params.size_norm_name}",
+        old=bool(${params.old}),
     )
     if df is not None:
         print("Filtering sessions")
@@ -140,7 +145,7 @@ process create_dataframe {
         print("Filtering unwanted mice")
         df = mouse_filter(df, "${experiment}")
         print("Saving dataframe")
-        df.to_parquet("${params.moseq_folder}/${experiment}_syllable_df_v00.parquet", compression="brotli")
+        df.to_parquet(f"${params.moseq_folder}/${experiment}_syllable_df_v{df_version:02d}.parquet", compression="brotli")
     """
 }
 
@@ -149,11 +154,11 @@ process create_usage_dataframe {
     cpus 1
     memory {
         if (experiment.contains("longtogeny_v2"))
-            return 80.GB
+            return 100.GB
         else if (experiment.contains("longtogeny"))
-            return 75.GB
+            return 90.GB
         else if (experiment.contains("ontogeny"))
-            return 25.GB
+            return 40.GB
         else
             return 50.GB
     }
@@ -175,18 +180,21 @@ process create_usage_dataframe {
         create_usage_dataframe, normalize_dataframe, filter_high_usage
     )
 
-    file = Path("${params.moseq_folder}/${experiment}_syllable_df_v00.parquet")
+    df_version = int(${params.df_version})
+
+    file = Path(f"${params.moseq_folder}/${experiment}_syllable_df_v{df_version:02d}.parquet")
+
     if file.exists():
         df = pd.read_parquet(file)
 
         # syllable counts (with raw syllable labels)
         df = create_usage_dataframe(df)
         df = filter_high_usage(df)
-        df.to_parquet("${params.moseq_folder}/${experiment}_raw_counts_matrix_v00.parquet")
+        df.to_parquet(f"${params.moseq_folder}/${experiment}_raw_counts_matrix_v{df_version:02d}.parquet")
 
         # normalized syllable usage (should sum to 1)
         norm_df = normalize_dataframe(df)
-        norm_df.to_parquet("${params.moseq_folder}/${experiment}_raw_usage_matrix_v00.parquet")
+        norm_df.to_parquet(f"${params.moseq_folder}/${experiment}_raw_usage_matrix_v{df_version:02d}.parquet")
     """
 }
 
@@ -205,13 +213,14 @@ process relabel_dataframe {
     from pathlib import Path
     from aging.behavior.syllables import relabel_by_usage
 
+    df_version = int(${params.df_version})
     folder = Path("${params.moseq_folder}")
 
-    files = sorted(folder.glob("*raw_*_matrix_v00.parquet"))
+    files = sorted(folder.glob(f"*raw_*_matrix_v{df_version:02d}.parquet"))
 
     def get_usage_map():
-        df = pd.read_parquet(folder / "ontogeny_males_raw_counts_matrix_v00.parquet")
-        counts = df.sum().sort_values(ascending=False).index
+        df = pd.read_parquet(folder / f"ontogeny_males_raw_counts_matrix_v{df_version:02d}.parquet")
+        counts = df.sum().sort_values(ascending=False).index.astype(int)
         leftovers = set(range(100)) - set(counts)
         counts = list(counts) + list(leftovers)
         return {syll: i for i, syll in enumerate(counts)}
@@ -228,6 +237,7 @@ workflow {
     out = organize_extractions(params.moseq_folder)
     out = apply_pca(out)
     out = apply_moseq_model(out)
+    // experiment_path = get_experiment_names("").map { it.readLines() }
     experiment_path = get_experiment_names(out).map { it.readLines() }
         .flatten()
         .filter { it != "" && it != null && it != "\n" }

@@ -33,19 +33,36 @@ def predict_and_save(path: str | Path, model, recon_key, frames_key="frames", re
     with h5py.File(path, "r") as h5f:
         data = h5f[frames_key][()]
 
+    # add the proper height offset to match template mice
+    template_poses = np.load('/n/groups/datta/win/longtogeny/data/median_template_poses.npy')
+    med_pose = np.median(data, axis=0)
+    vals = []
+    for t in template_poses:
+        diff = t - med_pose
+        med = np.median(diff[diff != 0])
+        if not np.isnan(med):
+            vals.append(med)
+    height = 0
+    if len(vals) > 1:
+        height = np.mean(vals)
+
     # optionally rescale animal to match 3-month old and clean frame
     if clean_noise:
         data = np.array([clean(frame, height_thresh=8, tail_ksize=9) for frame in data])
     if rescale:
         data = rescale_data(data)
 
+    data = np.clip(np.where(data > 0, data.astype('float32') + height, 0), 0, 200)
+
     data = Session(data)
     output = predict(data, model, batch_size=512, desc="Predicting")
+    output[output < 1] = 0
+    output = np.clip(np.round(output), 0, 255).astype(np.uint8)
 
     with h5py.File(path, "r+") as h5f:
         if recon_key in h5f:
             del h5f[recon_key]
-        h5f.create_dataset(recon_key, data=output, dtype="float32", compression="lzf")
+        h5f.create_dataset(recon_key, data=output, dtype="uint8", compression="lzf")
 
 
 @curry

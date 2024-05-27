@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from sklearn.metrics import r2_score
 from typing import Callable, Optional
 from toolz import dissoc, partial, valmap
-from statsmodels.gam.smooth_basis import BSplines
+from statsmodels.gam.smooth_basis import UnivariateBSplines
 from sklearn.model_selection import StratifiedKFold, RepeatedStratifiedKFold
 
 
@@ -88,10 +88,11 @@ def initialize_params(
     n_syllables,
     linear_model=False,
     n_splines=None,
-    n_size_splines=None,
     n_animals=None,
+    n_sexes=None,
     model_development=False,
     n_development_splines=None,
+    n_sex_splines=None,
 ):
     if linear_model:
         weights = np.linalg.lstsq(np.stack([age_normalizer(age), np.ones_like(age)], axis=1), counts, rcond=None, )[0].T
@@ -108,22 +109,25 @@ def initialize_params(
     # theta_list = np.array(theta_list).T
     # theta_list = np.where(theta_list == 0, 1e-3, theta_list)
     # params = {"bio_basis_weights": jnp.log(jnp.array(theta_list.T))}
-    params = {"bio_basis_weights": jnp.zeros((n_syllables, n_splines))}
-
-    # handles size params for models v2, v3, and v4
-    if n_size_splines is not None:
-        # params["size_basis_weights"] = jnp.zeros((n_syllables, n_size_splines))
-        params["size_slope"] = jnp.zeros((n_syllables, 1))
+    params = {
+        "bio_basis_weights": jnp.zeros((n_syllables, n_splines)),
+        "size_slope": jnp.zeros((n_syllables, 1)),
+    }
 
     # handles individuality params for models v3 and v4
     if n_animals is not None:
         params["individual_biases"] = jnp.zeros((n_syllables, n_animals - 1))
+
+    if n_sexes is not None:
+        params["sex_biases"] = jnp.zeros((n_syllables, n_sexes - 1))
 
     # handles model v4 which adds a development term
     if model_development and n_development_splines is None:
         params["development_weights"] = jnp.ones((1, 2))
     elif n_development_splines is not None:
         params["development_weights"] = jnp.ones((1, n_development_splines))
+    if n_sex_splines is not None:
+        params["sex_weights"] = jnp.ones((1, n_sex_splines))
 
     return params
 
@@ -179,7 +183,7 @@ def model_fun_v0(params, bases, age_samples, true_age, counts, hypparams):
     counts, pred_counts = mask_data(counts, pred_counts, hypparams)
 
     age_probs = tfp.distributions.Normal(
-        loc=counts[:, None], scale=20
+        loc=counts[:, None], scale=1
     ).log_prob(pred_counts)
 
     gauss_probs = tfp.distributions.Normal(
@@ -193,11 +197,17 @@ def model_fun_v0(params, bases, age_samples, true_age, counts, hypparams):
 # ~~~~~~~~~~~ write the first spline regression model ~~~~~~~~~~~ #
 def model_fun_v1(params, bases, age_samples, true_age, counts, hypparams):
     concentrations = (
-        jnp.exp(params["bio_basis_weights"] @ bases["bio"])
+        params["bio_basis_weights"] @ bases["bio"]
     )  # shape (n_syllables, n_ages)
 
     concentrations = jnp.tile(concentrations.T[None], (len(counts), 1, 1))
     # shape (n_sessions, n_ages, n_syllables)
+
+    # apply optional scaling parameter that alters the way the model is fit
+    if 'scale' in hypparams and hypparams.get("normalize_by_softmax", False):
+        concentrations = jax.nn.softmax(concentrations, axis=2) * hypparams['scale']
+    else:
+        concentrations = jnp.exp(concentrations)
 
     log_probs = compute_distribution_logprobs(
         counts, concentrations, true_age, age_samples, hypparams
@@ -246,20 +256,12 @@ def neg_log_likelihood(
 
         params_ll = params_probs.sum()
 
-    # handles models v2, v3, and v4 which incorporate animal size
-    # TODO: change
-    if "size_basis_weights" in params:
-        size_params_probs = tfp.distributions.Normal(
-            loc=0, scale=hypparams["size_params_sd"]
-        ).log_prob(params["size_basis_weights"])
-        params_ll = params_ll + size_params_probs.sum()
-
     total_lls = total_lls + params_ll
     return -total_lls
 
 
-def create_splines(x, df=6, degree=3, include_intercept=True):
-    bs = BSplines(x, df=df, degree=degree, include_intercept=include_intercept)
+def create_splines(x, df=6, degree=3, include_intercept=True, extra_knots: Optional[list] = None):
+    bs = UnivariateBSplines(x, df=df, degree=degree, include_intercept=include_intercept, knots=extra_knots)
     return bs, bs.basis.T
 
 
@@ -300,7 +302,7 @@ def get_biological_age(
     hypparams = dissoc(hypparams, "mask")
     log_probs = model_fun(params, bases, age_samples, chron_age, counts, hypparams)
     predicted_bio_ages = age_samples[jnp.argmax(log_probs, axis=1)]
-    return age_unnormalizer(predicted_bio_ages)
+    return age_unnormalizer(predicted_bio_ages), jax.nn.softmax(log_probs, axis=1)
 
 
 def expected_syllable_frequencies(z, theta_age, B_age):
@@ -338,7 +340,12 @@ def model_fun_v2(params, bases, age_samples, true_age, counts, hypparams):
         :, None, :
     ]  # shape (n_sessions, 1, n_syllables)
 
-    concentrations = jnp.exp(bio_concentrations + size_concentrations)
+    concentrations = bio_concentrations + size_concentrations
+
+    if 'scale' in hypparams and hypparams.get("normalize_by_softmax", False):
+        concentrations = jax.nn.softmax(concentrations, axis=2) * hypparams['scale']
+    else:
+        concentrations = jnp.exp(concentrations)
 
     log_probs = compute_distribution_logprobs(
         counts, concentrations, true_age, age_samples, hypparams
@@ -370,7 +377,12 @@ def model_fun_v3(params, bases, age_samples, true_age, counts, hypparams):
         :, None, :
     ]  # shape (n_sessions, 1, n_syllables)
 
-    concentrations = jnp.exp(bio_concentrations + size_concentrations + individual_biases)
+    concentrations = bio_concentrations + size_concentrations + individual_biases
+
+    if 'scale' in hypparams and hypparams.get("normalize_by_softmax", False):
+        concentrations = jax.nn.softmax(concentrations, axis=2) * hypparams['scale']
+    else:
+        concentrations = jnp.exp(concentrations)
 
     log_probs = compute_distribution_logprobs(
         counts, concentrations, true_age, age_samples, hypparams
@@ -405,7 +417,12 @@ def model_fun_v4(params, bases, age_samples, true_age, counts, hypparams):
     ]  # shape (n_sessions, 1, n_syllables)
     individual_biases = individual_biases[:, None, :].T  # shape (n_sessions, n_ages, n_syllables)
 
-    concentrations = jnp.exp(bio_concentrations + size_concentrations + individual_biases * bias_scale[..., None])
+    concentrations = bio_concentrations + size_concentrations + individual_biases * bias_scale[..., None]
+
+    if 'scale' in hypparams and hypparams.get("normalize_by_softmax", False):
+        concentrations = jax.nn.softmax(concentrations, axis=2) * hypparams['scale']
+    else:
+        concentrations = jnp.exp(concentrations)
 
     log_probs = compute_distribution_logprobs(
         counts, concentrations, true_age, age_samples, hypparams
@@ -436,7 +453,54 @@ def model_fun_v5(params, bases, age_samples, true_age, counts, hypparams):
     ]  # shape (n_sessions, 1, n_syllables)
     individual_biases = individual_biases[:, None, :].T  # shape (n_sessions, n_ages, n_syllables)
 
-    concentrations = jnp.exp(bio_concentrations + size_concentrations + individual_biases * bias_scale[..., None])
+    concentrations = bio_concentrations + size_concentrations + individual_biases * bias_scale[..., None]
+
+    if 'scale' in hypparams and hypparams.get("normalize_by_softmax", False):
+        concentrations = jax.nn.softmax(concentrations, axis=2) * hypparams['scale']
+    else:
+        concentrations = jnp.exp(concentrations)
+
+    log_probs = compute_distribution_logprobs(
+        counts, concentrations, true_age, age_samples, hypparams
+    )
+
+    return log_probs
+
+### ~~~~~~~~~~~ version 6 of the model - add size basis, individuality, and sex terms where individuality, sex scales are learned ~~~~~~~~~~~ ###
+
+
+def model_fun_v6(params, bases, age_samples, true_age, counts, hypparams):
+    bio_concentrations = (
+        params["bio_basis_weights"] @ bases["bio"]
+    )  # shape (n_syllables, n_ages)
+    size_concentrations = (
+        params["size_slope"] @ bases["size"]
+    )  # shape (n_syllables, n_sessions)
+
+    ind_bias_scale = jnp.exp(params["development_weights"] @ bases["development"])  # shape (1, n_ages)
+    sex_bias_scale = jnp.exp(params["sex_weights"] @ bases["sex"])  # shape (1, n_ages)
+
+    individual_biases = (
+        raise_dim(params["individual_biases"], axis=1) @ bases["individual"]
+    )  # shape (n_syllables, n_sessions)
+
+    sex_biases = (
+        raise_dim(params["sex_biases"], axis=1) @ bases["sex_id"]
+    )  # shape (n_syllables, n_sessions)
+
+    bio_concentrations = bio_concentrations.T[None]  # shape (1, n_ages, n_syllables)
+    size_concentrations = size_concentrations.T[
+        :, None, :
+    ]  # shape (n_sessions, 1, n_syllables)
+    individual_biases = ind_bias_scale[..., None] * individual_biases[:, None, :].T  # shape (n_sessions, n_ages, n_syllables)
+    sex_biases = sex_bias_scale[..., None] * sex_biases[:, None, :].T  # shape (n_sessions, n_ages, n_syllables)
+
+    concentrations = bio_concentrations + size_concentrations + individual_biases + sex_biases
+
+    if 'scale' in hypparams and hypparams.get("normalize_by_softmax", False):
+        concentrations = jax.nn.softmax(concentrations, axis=2) * hypparams['scale']
+    else:
+        concentrations = jnp.exp(concentrations)
 
     log_probs = compute_distribution_logprobs(
         counts, concentrations, true_age, age_samples, hypparams
@@ -487,19 +551,16 @@ def _initialize_parameters(model_version, bases, features, hypparams) -> Callabl
     elif model_version == 2:
         init = partial(
             initialize_params,
-            n_size_splines=hypparams["n_size_splines"],
         )
     elif model_version == 3:
         init = partial(
             initialize_params,
-            n_size_splines=hypparams["n_size_splines"],
             n_animals=hypparams["n_animals"],
         )
         bases["individual"] = jnp.array(features["mice"])
     elif model_version == 4:
         init = partial(
             initialize_params,
-            n_size_splines=hypparams["n_size_splines"],
             n_animals=hypparams["n_animals"],
             model_development=True,
         )
@@ -507,13 +568,26 @@ def _initialize_parameters(model_version, bases, features, hypparams) -> Callabl
     elif model_version == 5:
         init = partial(
             initialize_params,
-            n_size_splines=hypparams["n_size_splines"],
             n_animals=hypparams["n_animals"],
             n_development_splines=hypparams["n_development_splines"],
         )
         bases["individual"] = jnp.array(features["mice"])
         _, B_dev = create_splines(np.linspace(0, 1, hypparams["n_age_samples"]), df=hypparams["n_development_splines"])
         bases["development"] = B_dev
+    elif model_version == 6:
+        init = partial(
+            initialize_params,
+            n_animals=hypparams["n_animals"],
+            n_sexes=hypparams["n_sexes"],
+            n_development_splines=hypparams["n_development_splines"],
+            n_sex_splines=hypparams["n_sex_splines"],
+        )
+        bases["individual"] = jnp.array(features["mice"])
+        bases["sex_id"] = jnp.array(features["sex"])
+        _, B_dev = create_splines(np.linspace(0, 1, hypparams["n_age_samples"]), df=hypparams["n_development_splines"])
+        bases["development"] = B_dev
+        _, B_sex = create_splines(np.linspace(0, 1, hypparams["n_age_samples"]), df=hypparams["n_sex_splines"])
+        bases["sex"] = B_sex
     else:
         init = initialize_params
     return init, bases
@@ -522,14 +596,17 @@ def _initialize_parameters(model_version, bases, features, hypparams) -> Callabl
 def _initialize_age_basis(hypparams):
 
     age_normalizer, age_unnormalizer = age_normalizer_factory(
-        min_age=hypparams["min_age"], max_age=hypparams["max_age"]
+        min_age=hypparams["min_age"], max_age=hypparams["max_age"], log_transform=hypparams.get("log_age", False),
     )
     age_samples = np.linspace(0, 1, hypparams["n_age_samples"])
 
     if hypparams.get("n_splines") is None:
         return {}, age_samples, age_normalizer, age_unnormalizer
 
-    _, B_age = create_splines(age_samples, df=hypparams["n_splines"])
+    if "extra_knots" in hypparams and not isinstance(hypparams["extra_knots"], (list, tuple)):
+        raise ValueError("Extra knots should be a list or tuple of values")
+
+    _, B_age = create_splines(age_samples, df=hypparams["n_splines"], extra_knots=hypparams.get("extra_knots", None))
     return {"bio": B_age}, age_samples, age_normalizer, age_unnormalizer
 
 
@@ -557,30 +634,10 @@ def masked_xval(
 def stratified_xval(
     features: dict, hypparams: dict, model_version: int, n_folds: int, seed: int = 3, n_repeats: Optional[int] = None
 ):
+
     hypparams = deepcopy(hypparams)
 
-    bases, age_samples, age_normalizer, age_unnormalizer = _initialize_age_basis(hypparams)
-    true_age = age_normalizer(features["ages"])
-    hypparams["age_sd"] = age_normalizer(hypparams["age_sd"] + hypparams["min_age"])
-
-    if model_version > 1:
-        size_normalizer, _ = age_normalizer_factory(
-            min_age=features["sizes"].min(), max_age=features["sizes"].max()
-        )
-        sizes = size_normalizer(features["sizes"])
-        spline_class, _ = create_splines(age_samples, df=hypparams["n_size_splines"])
-        bases["size"] = spline_class.transform(sizes).T
-
-    init, bases = _initialize_parameters(model_version, bases, features, hypparams)
-
-    params = init(
-        features["counts"],
-        hypparams["n_splines"],
-        features["ages"],
-        age_samples,
-        age_normalizer,
-        hypparams["n_syllables"],
-    )
+    init_components = model_setup(features, hypparams, model_version)
 
     if n_repeats is None:
         folds = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
@@ -600,76 +657,61 @@ def stratified_xval(
             "counts": features["counts"][test],
             "ages": features["ages"][test],
         }
-
-        train_bases = {
-            "bio": bases["bio"],
-        }
-
-        test_bases = {
-            "bio": bases["bio"],
-        }
+        train_components = deepcopy(init_components)
+        test_components = deepcopy(init_components)
 
         if model_version > 1:
-            train_bases["size"] = bases["size"][:, train]
-            test_bases["size"] = bases["size"][:, test]
-            # train_features["sizes"] = features["sizes"][train]
-            # test_features["sizes"] = features["sizes"][test]
+            train_components.bases["size"] = init_components.bases["size"][:, train]
+            test_components.bases["size"] = init_components.bases["size"][:, test]
+
+            train_features["sizes"] = features["sizes"][train]
+            test_features["sizes"] = features["sizes"][test]
         if model_version > 2:
-            train_bases["individual"] = bases["individual"][:, train]
-            test_bases["individual"] = bases["individual"][:, test]
+            train_components.bases["individual"] = init_components.bases["individual"][:, train]
+            test_components.bases["individual"] = init_components.bases["individual"][:, test]
 
-        if model_version == 5:
-            train_bases["development"] = bases["development"]
-            test_bases["development"] = bases["development"]
+            train_features["mice"] = features["mice"][train]
+            test_features["mice"] = features["mice"][test]
+        # if model_version == 5:
+        #     train_components.bases["development"] = init_components.bases["development"]
+        #     test_components.bases["development"] = init_components.bases["development"]
 
-        train_true_age = true_age[train]
-        test_true_age = true_age[test]
+        train_components.true_age = init_components.true_age[train]
+        test_components.true_age = init_components.true_age[test]
 
-        ll_fun = partial(
-            neg_log_likelihood,
-            bases=train_bases,
-            age_samples=age_samples,
-            true_age=train_true_age,
-            counts=train_features["counts"],
-            hypparams=hypparams,
-            model_fun=globals()[f"model_fun_v{model_version}"],
-            heldout=False,
-        )
+        out = fit_model(train_features, hypparams, model_version, train_components)
+        heldout_nll = neg_log_likelihood(out['params'], test_components.bases, test_components.age_samples, test_components.true_age, test_features["counts"], hypparams, globals()[f"model_fun_v{model_version}"], heldout=True)
 
-        optimized_params, loss = optimize(
-            params, ll_fun, lr=hypparams["lr"], n_iter=hypparams["n_opt_iter"]
-        )
-
-        heldout_nll = neg_log_likelihood(
-            optimized_params,
-            test_bases,
-            age_samples,
-            test_true_age,
-            test_features["counts"],
-            hypparams=hypparams,
-            model_fun=globals()[f"model_fun_v{model_version}"],
-            heldout=True,
-        )
-
-        bio_ages = get_biological_age(
-            optimized_params,
-            test_bases,
-            age_samples,
-            test_true_age,
+        bio_ages, age_likelihoods = get_biological_age(
+            out['params'],
+            test_components.bases,
+            test_components.age_samples,
+            test_components.true_age,
             test_features["counts"],
             hypparams,
-            age_unnormalizer,
+            test_components.age_unnormalizer,
             globals()[f"model_fun_v{model_version}"],
         )
 
-        output[i] = {
-            "params": optimized_params,
+        out_components = InitComponents(
+            bases=valmap(np.array, test_components.bases),
+            age_samples=np.array(test_components.age_samples),
+            true_age=np.array(test_components.true_age),
+            age_normalizer=test_components.age_normalizer,
+            age_unnormalizer=test_components.age_unnormalizer,
+            init=test_components.init,
+            params=valmap(np.array, train_components.params),
+            model_version=model_version,
+        )
+
+        out['heldout'] = {
             "heldout_ll": -int(heldout_nll),
-            "loss": np.array(loss),
             "bio_ages": bio_ages,
-            "true_ages": age_unnormalizer(test_true_age),
-            "test_idx": test,
+            "age_likelihoods": age_likelihoods,
+            "test_components": out_components,
         }
+
+        output[i] = out
 
     return output
 
@@ -741,7 +783,7 @@ def fit_model(features: dict, hypparams: dict, model_version: int, init_componen
         heldout=True,
     )
 
-    bio_ages = get_biological_age(
+    bio_ages, age_likelihoods = get_biological_age(
         optimized_params,
         init_components.bases,
         init_components.age_samples,
@@ -752,7 +794,7 @@ def fit_model(features: dict, hypparams: dict, model_version: int, init_componen
         globals()[f"model_fun_v{model_version}"],
     )
 
-    concentrations, concentration_components = compute_concentrations(optimized_params, model_version, init_components)
+    concentrations, concentration_components = compute_concentrations(optimized_params, model_version, init_components, hypparams)
 
     norm_bio_age = init_components.age_normalizer(bio_ages)
 
@@ -786,6 +828,7 @@ def fit_model(features: dict, hypparams: dict, model_version: int, init_componen
 
             extra_output = {
                 "heldout_r2_total": r2_score(heldout_counts, predicted_counts[hypparams["heldout_mask"]], multioutput="variance_weighted"),
+                "heldout_r2_total_v3": compute_heldout_r2(features["counts"], predicted_counts, hypparams["heldout_mask"])[1]
             }
 
     out_components = InitComponents(
@@ -804,6 +847,7 @@ def fit_model(features: dict, hypparams: dict, model_version: int, init_componen
         "heldout_ll": -int(heldout_nll),
         "loss": np.array(loss),
         "bio_ages": np.array(bio_ages),
+        "age_likelihoods": np.array(age_likelihoods),
         "true_ages": np.array(init_components.age_unnormalizer(init_components.true_age)),
         "init_components": out_components,
         "concentrations": np.array(concentrations),
@@ -846,11 +890,21 @@ def compute_concentration_components(params, model_version, init_components: Ini
         bias_scale = jnp.exp(params["development_weights"] @ init_components.bases["development"])
         concentrations["indiv"] = concentrations["indiv"][:, None, :]
         concentrations["indiv_scale"] = bias_scale.squeeze()
+    elif model_version == 6:
+        sex_biases = raise_dim(params["sex_biases"], axis=1) @ init_components.bases["sex_id"]
+        concentrations['sex'] = sex_biases[:, None, :]
+
+        indiv_scale = jnp.exp(params["development_weights"] @ init_components.bases["development"])
+        concentrations["indiv"] = concentrations["indiv"][:, None, :]
+        concentrations["indiv_scale"] = indiv_scale.squeeze()
+
+        sex_scale = jnp.exp(params["sex_weights"] @ init_components.bases["sex"])
+        concentrations["sex_scale"] = sex_scale.squeeze()
 
     return concentrations
 
 
-def compute_concentrations(params, model_version, init_components) -> tuple[jnp.array, dict]:
+def compute_concentrations(params, model_version, init_components: InitComponents, hypparams) -> tuple[jnp.array, dict]:
     concentration_components = compute_concentration_components(params, model_version, init_components)
 
     concentrations = concentration_components["bio"].T[None]
@@ -860,11 +914,19 @@ def compute_concentrations(params, model_version, init_components) -> tuple[jnp.
         concentrations = concentrations + concentration_components["indiv"].T[:, None, :]
     elif model_version > 3:
         concentrations = concentrations + concentration_components["indiv"].T * concentration_components["indiv_scale"][None, :, None]
-    
+    if model_version == 6:
+        concentrations = concentrations + concentration_components["sex"].T * concentration_components["sex_scale"][None, :, None]
+
     if len(concentrations) == 1:
         concentrations = jnp.tile(concentrations, (init_components.true_age.shape[0], 1, 1))
     
     if model_version == 0:
         return concentrations, concentration_components
-    return jnp.exp(concentrations), concentration_components
+
+    if 'scale' in hypparams and hypparams.get("normalize_by_softmax", False):
+        concentrations = jax.nn.softmax(concentrations, axis=2) * hypparams['scale']
+    else:
+        concentrations = jnp.exp(concentrations)
+
+    return concentrations, concentration_components
     

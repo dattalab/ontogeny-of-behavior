@@ -32,7 +32,7 @@ class AugmentationParams:
     shear_angles: Tuple[int, int, int, int] = (-15, 15, -15, 15)
     translate_x: float = 0.2
     translate_y: float = 0.3
-    height: Tuple[int, int] = (-5, 5)
+    height: Tuple[int, int] = (-5, 5)  # TODO: this should be much higher
     white_noise_scale: float = 5  # mm
     min_threshold_range: Tuple[int, int] = (1, 20)
     max_threshold_range: Tuple[int, int] = (40, 120)

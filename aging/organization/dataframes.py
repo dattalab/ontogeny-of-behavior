@@ -4,10 +4,9 @@ import numba
 import numpy as np
 from pathlib import Path
 from copy import deepcopy
-from tqdm.auto import tqdm
 from datetime import datetime
+from toolz import keyfilter, valmap
 from aging.behavior.scalars import compute_scalars
-from toolz import concat, keyfilter, valmap
 
 
 _parser = re.compile(r"session_(\d+)")
@@ -23,20 +22,22 @@ def jax_parse_date(path: Path) -> datetime:
     return datetime.strptime("_".join(path.stem.split("_")[:2]), "%Y-%m-%d_%H-%M-%S")
 
 
-def create_uuid_map(folders, syllable_path, experiment) -> dict:
+def create_uuid_map(syllable_path, experiment, old=True, debug=False) -> dict:
+    from aging.organization.paths import get_experiment_results_by_extraction_time
+
     uuid_map = {}
-    for file in tqdm(
-        filter(
-            lambda f: get_experiment(f) == experiment,
-            concat(f.glob("**/*results_00.h5") for f in folders),
-        )
-    ):
+    files = get_experiment_results_by_extraction_time(old=old)
+    if debug:
+        print("Found", len(files[experiment]), "files in", experiment)
+    for file in files[experiment]:
         try:
             with h5py.File(file, "r") as h5f:
                 uuid = h5f["metadata/uuid"][()].decode()
                 uuid_map[uuid] = file
-        except OSError:
-            continue
+        except OSError as e:
+            if debug:
+                print("error with file", file)
+                print(e)
 
     with h5py.File(syllable_path, "r") as h5f:
         h5f_uuids = list(h5f)
@@ -86,7 +87,11 @@ def get_age(path: Path) -> int | float:
     experiment = get_experiment(path)
 
     if "ontogeny" in experiment:
-        age = ontogeny_age_map_fun(path.parents[2].name.split("_")[0], 'female' in experiment)
+        try:
+            age = ontogeny_age_map_fun(path.parents[2].name.split("_")[0], 'female' in experiment)
+        except KeyError:
+            # these are the female sessions in Dana_ontogeny without a named age folder
+            age = None
     elif "longtogeny_v2" in experiment:
         age = longtogeny_age_map_fun(parse_date(path), v2=True)
     elif "longtogeny_males" == experiment:

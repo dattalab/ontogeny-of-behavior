@@ -128,23 +128,24 @@ def mouse_filter(df: pd.DataFrame, experiment: str):
     return df
 
 
-def aggregate_into_dataframe(experiment: str, model_path: str, recon_key: str, debug: bool = False):
+def aggregate_into_dataframe(experiment: str, model_path: str, recon_key: str, old: bool = True, debug: bool = False):
     n_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
     print(f"Using {n_cpus} cpus")
 
     model_path = Path(model_path)
     syllable_path = model_path / "all_data_pca/syllables.h5"
+    pc_path = model_path / "all_data_pca/pca_scores.h5"
 
     def mp_extract(args):
         uuid, path = args
         return (uuid, path, extract_scalars(path, recon_key))
 
-    uuid_map = create_uuid_map(FOLDERS, syllable_path, experiment)
+    uuid_map = create_uuid_map(syllable_path, experiment, old=old, debug=debug)
     if debug:
         print(uuid_map)
 
     df = []
-    with h5py.File(syllable_path, "r") as h5f, Pool(n_cpus) as pool:
+    with h5py.File(syllable_path, "r") as h5f, h5py.File(pc_path, 'r') as pca_h5, Pool(n_cpus) as pool:
         loop_fun = map if debug else pool.imap_unordered
         for uuid, path, extraction_data in tqdm(loop_fun(mp_extract, uuid_map.items())):
             if extraction_data is None:
@@ -158,6 +159,8 @@ def aggregate_into_dataframe(experiment: str, model_path: str, recon_key: str, d
 
             age = get_age(path)
             try:
+                pcs = pca_h5[f"scores/{uuid}"][()]
+                pca_data = {f"pc_{i:02d}": pcs[:, i] for i in range(10)}
                 _df = pd.DataFrame(
                     dict(
                         experiment=experiment,
@@ -166,6 +169,7 @@ def aggregate_into_dataframe(experiment: str, model_path: str, recon_key: str, d
                         date=date,
                         age=age,
                         syllables=h5f[uuid][()],
+                        **pca_data,
                         **extraction_data,
                     )
                 )

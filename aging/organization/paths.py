@@ -1,8 +1,8 @@
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
-from toolz import groupby, concat
 from aging.organization.dataframes import get_experiment
+from toolz import groupby, concat, valmap, compose, curry, complement
 
 FOLDERS = [
     '/n/groups/datta/Dana/Ontogeny/raw_data/Ontogeny_females',
@@ -28,12 +28,29 @@ FOLDERS = [
 FOLDERS = tuple(Path(f) for f in FOLDERS)
 
 
-def get_experiment_grouped_files():
+def is_old_proc(file: Path):
+    return file.parent.name == "proc"
+
+
+def get_experiment_grouped_files() -> dict:
     return groupby(get_experiment, concat(f.glob("**/*results_00.h5") for f in FOLDERS))
 
 
-def get_experiment_grouped_depth_files():
+def get_experiment_grouped_depth_files() -> dict:
     return groupby(get_experiment, concat(f.glob("**/depth.[da][av][ti]") for f in FOLDERS))
+
+
+def get_experiment_results_by_extraction_time(old=True) -> dict:
+    paths = get_experiment_grouped_files()
+    _filter = is_old_proc if old else complement(is_old_proc)
+    return valmap(compose(list, curry(filter)(_filter)), paths)
+
+
+def get_experiments_grouped_by_age(old=True) -> dict:
+    from aging.organization.dataframes import get_age
+    files = get_experiment_results_by_extraction_time(old)
+    return valmap(lambda v: groupby(get_age, v), files)
+     
 
 
 def create_plot_path(base_folder: Path, exp_name: str):

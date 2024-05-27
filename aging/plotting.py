@@ -9,17 +9,28 @@ from pathlib import Path
 from dataclasses import dataclass
 
 IMG_KWARGS = dict(aspect='auto', interpolation='none')
-ontogeny_age_colors = ['#DADAEB', '#6A51A3']
-ONTOGENY_AGE_CMAP = sns.blend_palette(ontogeny_age_colors, as_cmap=True)
 
-# _colors = ['#ccece6','#99d8c9','#66c2a4','#41ae76','#238b45','#006d2c']
-_colors = ['#DADAEB','#6A51A3']
-LONGTOGENY_AGE_CMAP = sns.blend_palette(_colors, as_cmap=True)
+ont_male_colors = ['#c7eae5', '#008C8D']
+ont_female_colors = ['#fee6ce', '#d94801']
+long_male_colors = ['#DADAEB', '#6A51A3']
+
+@dataclass
+class Colormaps:
+    ont_male = sns.blend_palette(ont_male_colors, as_cmap=True)
+    ont_female = sns.blend_palette(ont_female_colors, as_cmap=True)
+    long_male = sns.blend_palette(long_male_colors, as_cmap=True)
+
+
+COLORMAPS = Colormaps()
+
 
 @dataclass
 class PlotConfig:
     save_path: Path = Path("/n/groups/datta/win/figures/ontogeny")
     dana_save_path: Path = Path("/n/groups/datta/Dana/Ontogeny/figs")
+
+
+PLOT_CONFIG = PlotConfig()
 
 
 def figure(width, height, dpi=300, **kwargs):

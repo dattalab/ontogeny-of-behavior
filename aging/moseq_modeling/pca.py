@@ -46,7 +46,6 @@ def apply_whitening(data, L, mu):
 def get_whitening_params(data_dict):
     non_nan = lambda x: x[~np.isnan(np.reshape(x, (x.shape[0], -1))).any(1)]
     meancov = lambda x: (x.mean(0), np.cov(x, rowvar=False, bias=1))
-    contig = partial(np.require, dtype=np.float64, requirements="C")
 
     mu, Sigma = meancov(np.concatenate(list(map(non_nan, data_dict.values()))))
     L = np.linalg.cholesky(Sigma)
