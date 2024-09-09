@@ -1,15 +1,24 @@
-
+// define conda environment paths - set to your own paths
 def aging_env = "$HOME/miniconda3/envs/aging"
 def moseq_env = "$HOME/miniconda3/envs/moseq2-app"
 
+// set workflow parameters - these can be modified from the command line
+// h5 dataset name to save size-normalized frames
 params.size_norm_name = "win_size_norm_frames_v7"
+
+// pytorch model for size normalization
 params.snn_path = "/n/groups/datta/win/longtogeny/size_norm/models/bottleneck_optimization_00/stage_06/8a4a38f8-6d43-4df4-988e-8d17402bb23c/model.pt"
-//params.size_norm_name = "win_size_norm_frames_v8"
 //params.snn_path = "/n/groups/datta/win/longtogeny/size_norm/models/freeze_decoder_00/stage_09/7b96ec7e-f894-4391-8c39-f0cb8d7dd516/model.pt"
+
+// name of the moseq2-extract config.yaml file used for extractions
+// saved in /n/groups/datta/win/longtogeny/data/extractions/
 params.config_name = "config-2024-04-25"
+// folder to save extractions
 params.proc_name = "proc-2024-04-25"
+// set to 1 to force extraction of all files, even if they have already been extracted
 params.force_extract = 0
 
+// process to find all depth files that need to be extracted
 process find_extractable_files {
     executor "local"
     conda aging_env
@@ -37,6 +46,7 @@ process find_extractable_files {
     """
 }
 
+// runs moseq2-extract on each depth file
 process extract {
     label "short"
     memory 13.GB
@@ -61,6 +71,7 @@ process extract {
     """
 }
 
+// compresses the original depth files to avi format, saving 10x space
 process compress {
     label "short"
     cpus 1
@@ -78,6 +89,9 @@ process compress {
     """
 }
 
+// process to find extracted files that need to be size normalized
+// this is run separately from the extraction process to allow for de-synchronization between the two
+// for example, running a new size-norm model on previously extracted files
 process find_files_to_normalize {
     executor "local"
     conda aging_env
@@ -105,7 +119,7 @@ process find_files_to_normalize {
     """
 }
 
-
+// run size normalization on each extracted file
 process size_normalize {
     label "gpu"
     memory 12.GB
@@ -142,21 +156,29 @@ process size_normalize {
     """
 }
 
+// definition of the extraction and size-norm pipeline
 workflow {
     files = find_extractable_files()
+
+    // read in the files to extract, and filter out any empty lines
     files = files.map { it.readLines() }
         .flatten()
         .filter { it != "" && it != null && it != "\n" }
     files = extract(files)
-    // collect extractions, because they won't affect output of this find function
+
+    // collect extractions - don't run size normalization until all extractions are complete
     norm_files = find_files_to_normalize(files.collect())
     norm_files = norm_files.map { it.readLines() }
         .flatten()
         .filter { it != "" && it != null && it != "\n" }
-        .collate(25)
+        .collate(25) // group files into batches of 25
+
+    // perform size normalization on each extraction
+    // each size normalization process will run on a batch of 25 files
     size_normalize(norm_files)
 
-    // finish with the compressions
-    // avi_files = files.filter { it.endsWith(".dat") }
-    // compress(avi_files)
+    // finish with the compression step
+    // can comment out to improve pipeline speed
+    avi_files = files.filter { it.endsWith(".dat") }
+    compress(avi_files)
 }

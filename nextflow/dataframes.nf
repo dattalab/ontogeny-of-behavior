@@ -1,11 +1,19 @@
+// define conda environment paths - set to your own paths
 def aging_env = "$HOME/miniconda3/envs/aging"
 def moseq_env = "$HOME/miniconda3/envs/moseq2-app"
 
+// set workflow parameters - these can be modified from the command line
+// folder where extractions, pca, syllables, and dataframes are saved
 params.moseq_folder = "/n/groups/datta/win/longtogeny/data/ontogeny/version_11"
+// h5 dataset name to load size-normalized frames
 params.size_norm_name = "win_size_norm_frames_v7"
+// if you make multiple dataframes, you can increment this number to avoid overwriting
 params.df_version = 0
+// if set to 1, will use extractions saved in the "proc" folder rather than folders
+// with the date in them, i.e. "proc-2024-04-25"
 params.old = 1
 
+// creates symlinks to all the data files, organized by experiment
 process organize_extractions {
     executor 'local'
     conda aging_env
@@ -25,6 +33,8 @@ process organize_extractions {
     """
 }
 
+// applies PCA components learned from moseq model training data to ALL data
+// NOTE: 2 hours likely not enough time to let this run on new model
 process apply_pca {
     label "short"
     memory 13.GB
@@ -51,6 +61,8 @@ process apply_pca {
     """
 }
 
+// uses jax-moseq to apply pre-trained ARHMM model to all data in batches of 80 recording sessions
+// this is usually fast when running on the GPU (definitely faster than 1 hour) 
 process apply_moseq_model {
     label "gpu"
     memory 15.GB
@@ -73,6 +85,8 @@ process apply_moseq_model {
     """
 }
 
+// this is used to parallelize dataframe creation by experiment rather than by session
+// output is a file with experiment names listed on each line
 process get_experiment_names {
     executor 'local'
     conda aging_env
@@ -96,6 +110,8 @@ process get_experiment_names {
     """
 }
 
+// aggregates all sessions from an experiment into a single dataframe
+// this dataframe contains data for each frame. 
 process create_dataframe {
     label 'short'
     cpus 11
@@ -149,6 +165,7 @@ process create_dataframe {
     """
 }
 
+// transforms the larger dataframe into a usage matrix, where each row is a session
 process create_usage_dataframe {
     label 'short'
     cpus 1
@@ -177,7 +194,7 @@ process create_usage_dataframe {
     import pandas as pd
     from pathlib import Path
     from aging.moseq_modeling.dataframe import (
-        create_usage_dataframe, normalize_dataframe, filter_high_usage
+        filter_dataframes_by_usage, normalize_dataframe
     )
 
     df_version = int(${params.df_version})
@@ -188,8 +205,7 @@ process create_usage_dataframe {
         df = pd.read_parquet(file)
 
         # syllable counts (with raw syllable labels)
-        df = create_usage_dataframe(df)
-        df = filter_high_usage(df)
+        df = filter_dataframes_by_usage(df)
         df.to_parquet(f"${params.moseq_folder}/${experiment}_raw_counts_matrix_v{df_version:02d}.parquet")
 
         # normalized syllable usage (should sum to 1)
@@ -233,15 +249,19 @@ process relabel_dataframe {
     """
 }
 
+// full pipeline defined here
 workflow {
     out = organize_extractions(params.moseq_folder)
     out = apply_pca(out)
     out = apply_moseq_model(out)
-    // experiment_path = get_experiment_names("").map { it.readLines() }
+
+    // used to parallelize dataframe creation by experiment
     experiment_path = get_experiment_names(out).map { it.readLines() }
         .flatten()
         .filter { it != "" && it != null && it != "\n" }
+
     dfs = create_dataframe(experiment_path)
     dfs = create_usage_dataframe(dfs)
+    // run on all dataframes at once. These dataframes are not used any more.
     relabel_dataframe(dfs.collect())
 }

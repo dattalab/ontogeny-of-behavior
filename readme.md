@@ -21,3 +21,5 @@ pip install -e .
 # run this if you just plan on using the scripts without modifying them
 pip install .
 ```
+
+When in doubt, `pip install -e .` is the safest option.
