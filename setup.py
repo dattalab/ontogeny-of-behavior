@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
     name="aging",
     version="0.0.1",
-    author="Winthrop Gillis, Dana Rubi Levy, Rockwell Anyoha",
+    author="Winthrop Gillis, Dana Rubi Levy",
     author_email="win.gillis@gmail.com",
     packages=find_packages(),
     python_requires=">3.7",
@@ -14,7 +14,7 @@ setup(
         "scipy",
         "matplotlib",
         "seaborn",
-        #"torch",
+        "torch",
         "ipykernel",
         "ipywidgets",
         "toolz",
