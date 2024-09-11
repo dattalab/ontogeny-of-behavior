@@ -196,10 +196,27 @@ def aggregate_into_dataframe(experiment: str, model_path: str, recon_key: str, o
     return pd.concat(df, ignore_index=True)
 
 
-def create_usage_dataframe(df: pd.DataFrame):
+def create_usage_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     usage_df = (
         df.query("onsets")
         .groupby(["age", "mouse", "subject_name", "session_name", "uuid", "date"], sort=False)[
+            "syllables"
+        ]
+        .value_counts(normalize=False)
+    )
+    usage_df = usage_df.reset_index()
+    usage_matrix = usage_df.pivot_table(
+        values="count",
+        index=["age", "mouse", "subject_name", "session_name", "uuid", "date"],
+        columns="syllables",
+        fill_value=0,
+    )
+    return usage_matrix
+
+
+def create_frame_occupancy_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    usage_df = (
+        df.groupby(["age", "mouse", "subject_name", "session_name", "uuid", "date"], sort=False)[
             "syllables"
         ]
         .value_counts(normalize=False)
@@ -225,3 +242,15 @@ def filter_high_usage(df: pd.DataFrame):
     filter_idx = (norm_df > 0.2).any(axis="columns")
 
     return df[~filter_idx]
+
+
+def filter_dataframes_by_usage(df: pd.DataFrame) -> pd.DataFrame:
+    usage_df = create_frame_occupancy_dataframe(df)
+    usage_df = filter_high_usage(usage_df)
+
+    usage_df = create_usage_dataframe(
+        df[df['uuid'].isin(usage_df.index.get_level_values('uuid'))]
+    )
+    usage_df = filter_high_usage(usage_df)
+    return usage_df
+
