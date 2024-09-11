@@ -14,7 +14,6 @@ setup(
         "scipy",
         "matplotlib",
         "seaborn",
-        "torch",
         "ipykernel",
         "ipywidgets",
         "toolz",
@@ -23,14 +22,17 @@ setup(
         "scikit-learn",
         "umap-learn",
         "colorcet",
-        "kornia",
-        "lightning",
         "click",
         "multiprocess",
-        "optax",
-        "jax",
-        "tensorflow-probability",
+        "opencv-python-headless",
+        "ruamel.yaml",
         "statsmodels",
-        #"git+https://github.com/wingillis/jax-moseq.git@robust_arhmm"
-    ]
+        "polars",
+        # "git+https://github.com/wingillis/jax-moseq.git@robust_arhmm"
+    ],
+    extras_require={
+        "jax": ["jax", "optax", "tensorflow-probability"],
+        "torch": ["torch", "kornia", "lightning", "torchvision"],
+        "all": ["jax", "optax", "torch", "kornia", "lightning"],
+    },
 )
