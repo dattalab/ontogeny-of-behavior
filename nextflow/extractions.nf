@@ -15,7 +15,7 @@ params.snn_path = "/n/groups/datta/win/longtogeny/size_norm/models/bottleneck_op
 params.config_name = "config-2024-04-25"
 // folder to save extractions
 params.proc_name = "proc-2024-04-25"
-// set to 1 to force extraction of all files, even if they have already been extracted
+// set to 1 to force extraction of all files, even if they have already been extracted. 0 for only unextracted files
 params.force_extract = 0
 
 // process to find all depth files that need to be extracted
