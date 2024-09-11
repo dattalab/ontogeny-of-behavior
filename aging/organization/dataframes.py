@@ -2,10 +2,12 @@ import re
 import h5py
 import numba
 import numpy as np
+import pandas as pd
 from pathlib import Path
 from copy import deepcopy
-from datetime import datetime
+from dataclasses import dataclass
 from toolz import keyfilter, valmap
+from datetime import datetime, timedelta
 from aging.behavior.scalars import compute_scalars
 
 
@@ -262,3 +264,144 @@ def extract_scalars(path: Path, recon_key):
         print("Error with", str(path))
         print(e)
         return None
+
+
+def zscore(ser: pd.Series):
+    return (ser - ser.mean()) / ser.std()
+
+
+@dataclass
+class Long_df_paths:
+    counts_male: str = "/n/groups/datta/win/longtogeny/data/ontogeny/version_11-1/longtogeny_v2_males_raw_counts_matrix_v00.parquet"
+    counts_female: str = "/n/groups/datta/win/longtogeny/data/ontogeny/version_11-1/longtogeny_v2_females_raw_counts_matrix_v00.parquet"
+    usage_male: str = "/n/groups/datta/win/longtogeny/data/ontogeny/version_11-1/longtogeny_v2_males_raw_usage_matrix_v00.parquet"
+    usage_female: str = "/n/groups/datta/win/longtogeny/data/ontogeny/version_11-1/longtogeny_v2_females_raw_usage_matrix_v00.parquet"
+
+DF_PATHS = Long_df_paths()
+
+
+def load_male_long_df(average_weeks=False, merge_size=False, merge_ages=True, df_path=DF_PATHS.counts_male):
+    keep_syllables = np.loadtxt(
+        "/n/groups/datta/win/longtogeny/data/ontogeny/version_11/to_keep_syllables_raw.txt",
+        dtype=int,
+    )
+    df = pd.read_parquet(df_path)
+
+    df = df[keep_syllables]
+    if merge_size:
+        size_df = pd.read_parquet(
+            "/n/groups/datta/win/longtogeny/data/ontogeny/version_11-1/longtogeny_v2_males_mouse_area_df_v00.parquet"
+        )
+        df = df.join(size_df[["quant_0.5"]])
+
+    if average_weeks:
+        rsdf = df.reset_index()
+        start_date = rsdf['date'].min()
+        end_date = rsdf['date'].max() + timedelta(days=1)
+
+        dt = pd.date_range(start_date, end_date, freq='D')
+
+        date_df = pd.DataFrame(dict(dow=dt.day_of_week), index=dt.date)
+        cycle = date_df.diff()['dow'] < 0
+        date_df['week'] = cycle.cumsum().rename('week')
+
+        long_df_dates = pd.Series(df.index.get_level_values('date'), index=df.index, name='week')
+        df['week'] = long_df_dates.map(lambda x: date_df.loc[x.date(), 'week'])
+
+        if merge_ages:
+            df = df.reset_index(level='age')
+            df['age'] = df.groupby('week')['week'].transform(lambda x: x + 3)
+            df = df.set_index(['age', 'week'], append=True)
+        else:
+            df = df.set_index('week', append=True)
+
+        new_df = []
+        for (mouse, week), _df in df.groupby(['mouse', 'week'], observed=True):
+            _df = _df.reset_index(level='age')
+            if len(_df) > 2:
+                _df = _df.iloc[:2]
+            if len(_df) == 1:
+                new_df.append(_df.iloc[[0]])
+            else:
+                _tmp_df = pd.DataFrame(_df.mean()).T
+                _tmp_df.index = _df.index[[0]]
+                new_df.append(_tmp_df)
+
+        new_df = pd.concat(new_df).set_index('age', append=True)
+
+        if merge_size:
+            age_cut = pd.cut(new_df.index.get_level_values("age"), 21)
+            new_df["quant_0.5"] = new_df.groupby(age_cut, observed=True)["quant_0.5"].transform(zscore)
+
+        return new_df
+
+    if merge_size:
+        age_cut = pd.cut(df.index.get_level_values("age"), 21)
+        df["quant_0.5"] = df.groupby(age_cut, observed=True)["quant_0.5"].transform(zscore)
+
+    return df
+
+
+def load_female_long_df(average_weeks=False, merge_size=False, filter_female=False, merge_ages=True, df_path=DF_PATHS.counts_female):
+    keep_syllables = np.loadtxt(
+        "/n/groups/datta/win/longtogeny/data/ontogeny/version_11/to_keep_syllables_raw.txt",
+        dtype=int,
+    )
+    df = pd.read_parquet(df_path)
+
+    df = df[keep_syllables]
+    if filter_female:
+        df = df.query('mouse != "F4_03"').copy()
+
+    if merge_size:
+        size_df = pd.read_parquet(
+            "/n/groups/datta/win/longtogeny/data/ontogeny/version_11-1/longtogeny_v2_females_mouse_area_df_v00.parquet"
+        )
+        df = df.join(size_df[["quant_0.5"]])
+
+    if average_weeks:
+        rsdf = df.reset_index()
+        start_date = rsdf['date'].min()
+        end_date = rsdf['date'].max() + timedelta(days=1)
+
+        dt = pd.date_range(start_date, end_date, freq='D')
+
+        date_df = pd.DataFrame(dict(dow=dt.day_of_week), index=dt.date)
+        cycle = date_df.diff()['dow'] < 0
+        date_df['week'] = cycle.cumsum().rename('week')
+
+        long_df_dates = pd.Series(df.index.get_level_values('date'), index=df.index, name='week')
+        df['week'] = long_df_dates.map(lambda x: date_df.loc[x.date(), 'week'])
+
+        if merge_ages:
+            df = df.reset_index(level='age')
+            df['age'] = df.groupby('week')['week'].transform(lambda x: x + 3)
+            df = df.set_index(['age', 'week'], append=True)
+        else:
+            df = df.set_index('week', append=True)
+
+        new_df = []
+        for (mouse, week), _df in df.groupby(['mouse', 'week'], observed=True):
+            _df = _df.reset_index(level='age')
+            if len(_df) > 2:
+                _df = _df.iloc[:2]
+            if len(_df) == 1:
+                new_df.append(_df.iloc[[0]])
+            else:
+                _tmp_df = pd.DataFrame(_df.mean()).T
+                _tmp_df.index = _df.index[[0]]
+                new_df.append(_tmp_df)
+
+        new_df = pd.concat(new_df).set_index('age', append=True)
+
+        if merge_size:
+            age_cut = pd.cut(new_df.index.get_level_values("age"), 21)
+            new_df["quant_0.5"] = new_df.groupby(age_cut, observed=True)["quant_0.5"].transform(zscore)
+
+        return new_df
+
+    if merge_size:
+        age_cut = pd.cut(df.index.get_level_values("age"), 21)
+        df["quant_0.5"] = df.groupby(age_cut, observed=True)["quant_0.5"].transform(zscore)
+
+    return df
