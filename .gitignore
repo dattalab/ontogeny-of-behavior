@@ -11,6 +11,7 @@ lightning_logs/
 *.mp4
 *.png
 *.csv
+tmp.*
 
 __pycache__
 .DS_Store
