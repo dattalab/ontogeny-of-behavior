@@ -10,6 +10,7 @@ lightning_logs/
 *.pdf
 *.mp4
 *.png
+*.csv
 
 __pycache__
 .DS_Store
