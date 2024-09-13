@@ -108,7 +108,7 @@ def format_plots():
     plt.rcParams['figure.dpi'] = 200
 
 
-def save_factory(folder, backgrounds=('white',), tight_layout=True, dpi=300):
+def save_factory(folder, backgrounds=('white',), tight_layout=True, dpi=200):
     folder = Path(folder).absolute().expanduser()
     folder.mkdir(parents=True, exist_ok=True)
 

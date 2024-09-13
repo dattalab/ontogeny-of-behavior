@@ -1,12 +1,14 @@
 
 def aging_env = "$HOME/miniconda3/envs/aging"
 
+// supply path to config file that contains the parameter scan values
 params.config_file = "$HOME/code/ontogeny/configs/03-augmentation-scan.toml"
+// the stage is one of the sections defined in the scan config files 
 params.stage = 1
 params.seed = "0"
 params.stageList = "${params.stage}".tokenize(',') as List
 
-
+// this creates the parameter scan grid based on the stage
 process create_grid {
     executor 'local'
     conda aging_env
@@ -26,6 +28,8 @@ process create_grid {
     """
 }
 
+// this trains a size norm model for each parameter combination from the 
+// previous step
 process run_grid {
     label 'gpu'
     memory 15.GB

@@ -33,6 +33,6 @@ setup(
     extras_require={
         "jax": ["jax", "optax", "tensorflow-probability"],
         "torch": ["torch", "kornia", "lightning", "torchvision"],
-        "all": ["jax", "optax", "torch", "kornia", "lightning"],
+        "all": ["jax", "optax", "torch", "kornia", "lightning", "tensorflow-probability", "torchvision"],
     },
 )

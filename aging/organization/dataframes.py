@@ -287,10 +287,13 @@ def load_male_long_df(average_weeks=False, merge_size=False, merge_ages=True, df
     )
     df = pd.read_parquet(df_path)
 
+    _pth_name = Path(df_path).stem
+    version_number = re.search(r'v(\d{2})', _pth_name).group(1)
+
     df = df[keep_syllables]
     if merge_size:
         size_df = pd.read_parquet(
-            "/n/groups/datta/win/longtogeny/data/ontogeny/version_11-1/longtogeny_v2_males_mouse_area_df_v00.parquet"
+            f"/n/groups/datta/win/longtogeny/data/ontogeny/version_11-1/longtogeny_v2_males_mouse_area_df_v{version_number}.parquet"
         )
         df = df.join(size_df[["quant_0.5"]])
 
@@ -349,13 +352,16 @@ def load_female_long_df(average_weeks=False, merge_size=False, filter_female=Fal
     )
     df = pd.read_parquet(df_path)
 
+    _pth_name = Path(df_path).stem
+    version_number = re.search(r'v(\d{2})', _pth_name).group(1)
+    
     df = df[keep_syllables]
     if filter_female:
         df = df.query('mouse != "F4_03"').copy()
 
     if merge_size:
         size_df = pd.read_parquet(
-            "/n/groups/datta/win/longtogeny/data/ontogeny/version_11-1/longtogeny_v2_females_mouse_area_df_v00.parquet"
+            f"/n/groups/datta/win/longtogeny/data/ontogeny/version_11-1/longtogeny_v2_females_mouse_area_df_v{version_number}.parquet"
         )
         df = df.join(size_df[["quant_0.5"]])
 
