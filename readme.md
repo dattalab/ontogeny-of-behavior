@@ -44,7 +44,7 @@ You need to `pip install` it in order to import the code in the notebooks. See [
 ### `notebooks/` folder
 
 This folder contains exploratory notebooks (in the `exploration/` folder), data processing notebooks (in the `processing/` folder), and figure-generating notebooks (in the `figures/` folder).
-The `exploration/` and `figures/` folders contain sub-folders with for Dana's or Win's notebooks.
+The `exploration/` and `figures/` folders contain sub-folders for Dana's or Win's notebooks.
 
 The notebooks in the `figures/` folder often make one or more figure panels are should be clearly labeled with the figure they are associated with.
 
