@@ -19,6 +19,6 @@ __pycache__
 .nextflow
 .nextflow*
 nextflow_dana/work/
+estrous/
 # ignore for now - essentially copies of nextflow folder
 nextflow_dana
-estrous/
